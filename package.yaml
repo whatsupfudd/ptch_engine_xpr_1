@@ -1,0 +1,109 @@
+name:                narravid
+version:             0.1.0.0
+github:              "hugdro/narravid"
+license:             BSD3
+author:              "Hugo DesRosiers"
+maintainer:          "hugo.desrosiers@boardingcities.com"
+copyright:           "None."
+
+extra-source-files:
+- README.md
+- CHANGELOG.md
+
+# Metadata used when publishing your package
+# synopsis:            Short description of your package
+# category:            software.
+
+# To avoid duplicated efforts in documentation and dealing with the
+# complications of embedding Haddock markup inside cabal files, it is
+# common to point users to the README.md file.
+description:         Please see the README on GitHub at <https://github.com/hugdro/narravid#readme>
+
+dependencies:
+  - aeson
+  - base >= 4.7 && < 5
+  - bytestring
+  - containers
+  - directory
+  - text
+  - time
+  - vector
+  - uuid
+  # For YAML (config file):
+  - yaml
+  - directory
+  - filepath
+  # For Git (version):
+  - gitrev
+  # For options:
+  - optparse-applicative
+  - unix
+  # For Cont(T):
+  - mtl
+  # For Concurrency:
+  - stm
+  - process
+  # For SQL:
+  - postgresql-binary
+  - hasql
+  - hasql-th
+  - hasql-pool
+  - hasql-transaction
+  # For parsing:
+  - megaparsec
+  # For HTTP:
+  - http-client
+  - http-client-tls
+  - http-types
+  # For MinIO:
+  - minio-hs
+  - conduit
+  - conduit-extra
+  - unliftio
+  - http-conduit
+  # For temp files:
+  - temporary
+  - random
+
+
+default-extensions:
+- OverloadedStrings
+- DuplicateRecordFields
+- OverloadedRecordDot
+
+ghc-options:
+# - -Wall
+# - -Wunused-matches
+- -Wcompat
+- -Widentities
+- -Wincomplete-record-updates
+- -Wincomplete-uni-patterns
+#- -Wmissing-export-lists
+- -Wmissing-home-modules
+- -Wpartial-fields
+- -Wredundant-constraints
+
+library:
+  source-dirs: src
+
+executables:
+  narravid:
+    main:                Main.hs
+    source-dirs:         app
+    ghc-options:
+    - -threaded
+    - -rtsopts
+    - -with-rtsopts=-N
+    dependencies:
+    - narravid
+
+tests:
+  narravid-test:
+    main:                Spec.hs
+    source-dirs:         test
+    ghc-options:
+    - -threaded
+    - -rtsopts
+    - -with-rtsopts=-N
+    dependencies:
+    - narravid

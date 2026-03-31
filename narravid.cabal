@@ -1,0 +1,208 @@
+cabal-version: 1.12
+
+-- This file has been generated from package.yaml by hpack version 0.37.0.
+--
+-- see: https://github.com/sol/hpack
+
+name:           narravid
+version:        0.1.0.0
+description:    Please see the README on GitHub at <https://github.com/hugdro/narravid#readme>
+homepage:       https://github.com/hugdro/narravid#readme
+bug-reports:    https://github.com/hugdro/narravid/issues
+author:         Hugo DesRosiers
+maintainer:     hugo.desrosiers@boardingcities.com
+copyright:      None.
+license:        BSD3
+license-file:   LICENSE
+build-type:     Simple
+extra-source-files:
+    README.md
+    CHANGELOG.md
+
+source-repository head
+  type: git
+  location: https://github.com/hugdro/narravid
+
+library
+  exposed-modules:
+      AiSup.Client
+      AiSup.Types
+      Assets.S3Ops
+      Assets.Store
+      Assets.Types
+      Commands
+      Commands.Help
+      Commands.Ingest
+      Commands.Launch
+      Commands.Produce
+      Commands.Publish
+      Commands.Version
+      Commands.Work
+      DB.Connect
+      DB.Helpers
+      DB.LaunchOps
+      DB.LaunchStmt
+      DB.LeaseStmt
+      DB.Opers
+      DB.ProducerStmt
+      DB.TaskStmt
+      HttpSup.CorsPolicy
+      MainLogic
+      Options
+      Options.Cli
+      Options.ConfFile
+      Options.Runtime
+      Pitcher.Ingest
+      Pitcher.NarrationTypes
+      Pitcher.Publish.VideoSite
+      Pitcher.Render.GraphTypes
+      Pitcher.Render.Launch
+      Pitcher.Render.Producer
+      Pitcher.Render.TaskRunner
+      Pitcher.Render.TaskTypes
+      Pitcher.Render.Types
+      Pitcher.Render.WorkerLease
+      Pitcher.Render.WorkerMain
+      Pitcher.Render.WorkTypes
+      Utils
+  other-modules:
+      Paths_narravid
+  hs-source-dirs:
+      src
+  default-extensions:
+      OverloadedStrings
+      DuplicateRecordFields
+      OverloadedRecordDot
+  ghc-options: -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints
+  build-depends:
+      aeson
+    , base >=4.7 && <5
+    , bytestring
+    , conduit
+    , conduit-extra
+    , containers
+    , directory
+    , filepath
+    , gitrev
+    , hasql
+    , hasql-pool
+    , hasql-th
+    , hasql-transaction
+    , http-client
+    , http-client-tls
+    , http-conduit
+    , http-types
+    , megaparsec
+    , minio-hs
+    , mtl
+    , optparse-applicative
+    , postgresql-binary
+    , process
+    , random
+    , stm
+    , temporary
+    , text
+    , time
+    , unix
+    , unliftio
+    , uuid
+    , vector
+    , yaml
+  default-language: Haskell2010
+
+executable narravid
+  main-is: Main.hs
+  other-modules:
+      Paths_narravid
+  hs-source-dirs:
+      app
+  default-extensions:
+      OverloadedStrings
+      DuplicateRecordFields
+      OverloadedRecordDot
+  ghc-options: -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -threaded -rtsopts -with-rtsopts=-N
+  build-depends:
+      aeson
+    , base >=4.7 && <5
+    , bytestring
+    , conduit
+    , conduit-extra
+    , containers
+    , directory
+    , filepath
+    , gitrev
+    , hasql
+    , hasql-pool
+    , hasql-th
+    , hasql-transaction
+    , http-client
+    , http-client-tls
+    , http-conduit
+    , http-types
+    , megaparsec
+    , minio-hs
+    , mtl
+    , narravid
+    , optparse-applicative
+    , postgresql-binary
+    , process
+    , random
+    , stm
+    , temporary
+    , text
+    , time
+    , unix
+    , unliftio
+    , uuid
+    , vector
+    , yaml
+  default-language: Haskell2010
+
+test-suite narravid-test
+  type: exitcode-stdio-1.0
+  main-is: Spec.hs
+  other-modules:
+      Paths_narravid
+  hs-source-dirs:
+      test
+  default-extensions:
+      OverloadedStrings
+      DuplicateRecordFields
+      OverloadedRecordDot
+  ghc-options: -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -threaded -rtsopts -with-rtsopts=-N
+  build-depends:
+      aeson
+    , base >=4.7 && <5
+    , bytestring
+    , conduit
+    , conduit-extra
+    , containers
+    , directory
+    , filepath
+    , gitrev
+    , hasql
+    , hasql-pool
+    , hasql-th
+    , hasql-transaction
+    , http-client
+    , http-client-tls
+    , http-conduit
+    , http-types
+    , megaparsec
+    , minio-hs
+    , mtl
+    , narravid
+    , optparse-applicative
+    , postgresql-binary
+    , process
+    , random
+    , stm
+    , temporary
+    , text
+    , time
+    , unix
+    , unliftio
+    , uuid
+    , vector
+    , yaml
+  default-language: Haskell2010

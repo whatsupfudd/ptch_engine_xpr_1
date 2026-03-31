@@ -1,0 +1,54 @@
+{-# LANGUAGE QuasiQuotes #-}
+module DB.TaskStmt where
+
+import Data.Int (Int32, Int64)
+import Data.Text (Text)
+import Data.UUID (UUID)
+import qualified Data.Vector as Vc
+
+import qualified Data.Aeson as Ae
+
+import Hasql.Statement (Statement)
+import qualified Hasql.TH as TH
+
+
+selectInputAssetStmt :: Statement (Int64, Text) (Maybe (Int64, UUID))
+selectInputAssetStmt =
+  [TH.maybeStatement|
+    select n.asset_fk::int8, n.asset_eid::uuid
+    from prod.render_node n
+    where n.graph_fk = $1::int8
+      and n.key = $2::text
+      and n.status = 'done'
+      and n.asset_fk is not null
+      and n.asset_eid is not null
+    limit 1
+  |]
+
+selectDialogueSentenceBodiesStmt :: Statement Int64 (Vc.Vector (Int32, Text))
+selectDialogueSentenceBodiesStmt =
+  [TH.vectorStatement|
+    select s.ord::int4, s.body::text
+    from prod.dialogue_sentence s
+    where s.dialogue_fk = $1::int8
+    order by s.ord asc
+  |]
+
+selectDialogueVisualAnchorsStmt :: Statement Int64 (Vc.Vector (Int32, Maybe Int32))
+selectDialogueVisualAnchorsStmt =
+  [TH.vectorStatement|
+    select v.ord::int4, v.sentence_ord::int4?
+    from prod.dialogue_visual v
+    where v.dialogue_fk = $1::int8
+    order by v.ord asc
+  |]
+
+insertAssetStmt :: Statement (Maybe Text, UUID, Maybe Text, Text, Int64, Maybe Text) Int64
+insertAssetStmt =
+  [TH.singletonStatement|
+    insert into asset
+      (name, eid, description, contentType, size, notes)
+    values
+      ($1::text?, $2::uuid, $3::text?, $4::text, $5::int8, $6::text?)
+    returning uid::int8
+  |]

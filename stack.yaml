@@ -1,0 +1,12 @@
+snapshot:
+  url: https://raw.githubusercontent.com/commercialhaskell/stackage-snapshots/master/lts/22/44.yaml
+
+packages:
+- .
+
+#
+extra-deps:
+  - ../../../Haskell/Minio/minio-hs
+
+system-ghc: true
+
