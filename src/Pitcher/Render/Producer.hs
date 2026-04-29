@@ -73,7 +73,7 @@ launchProducer cfg pool narrationEid = do
       jobUid <- Lo.loadOrCreateRenderJob pool narrationUid
       let
         graph = buildRenderGraph cfg narration
-      putStrLn $ "@[launchProducer] graph: " <> show graph
+      -- putStrLn $ "@[launchProducer] graph: " <> show graph
       graphUid <- persistGraph pool jobUid graph
       _ <- producerTick cfg pool jobUid
       pure graphUid
@@ -86,7 +86,6 @@ buildRenderGraph :: ProducerCfg -> NarrationRender -> RenderGraph
 buildRenderGraph cfg narration =
   let 
     audioNodes = [ mkAudioNode cfg dlg | dlg <- narration.dialogues ]
-
     imageNodes = [ mkImageNode cfg dlg vis | dlg <- narration.dialogues, vis <- dlg.visuals ]
     segmentNodes = [ mkSegmentNode cfg dlg | dlg <- narration.dialogues ]
     finalNode = mkFinalNode cfg narration

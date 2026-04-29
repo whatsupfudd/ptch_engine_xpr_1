@@ -1,7 +1,8 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE QuasiQuotes #-}
 
-module Pitcher.Ingest ( Narration(..), DialogueBlock(..), DialogueVisual(..), ingest) where
+-- ( Narration(..), DialogueBlock(..), DialogueVisual(..), ingest)
+module Pitcher.Ingest where
 
 import Control.Exception (throwIO)
 import Control.Monad (foldM, forM_, unless, void, when)
@@ -30,31 +31,8 @@ import Text.Megaparsec.Char ( char, eol, hspace, hspace1, string, space )
 import Options.Cli (IngestOpts (..))
 import Data.Char (isDigit)
 
-
-newtype Narration = Narration {
-    dialogues :: [DialogueBlock]
-  }
-  deriving (Eq, Show)
-
-data DialogueBlock = DialogueBlock {
-    emotion :: Text
-  , sentences :: [Text]
-  , visuals :: [DialogueVisual]
-  }
-  deriving (Eq, Show)
-
-
-data DialogueVisual = DialogueVisual {
-    sentenceOrd :: Maybe Int32
-  , description :: Text
-  }
-  deriving (Eq, Show)
-
-
-data RawItem =
-    RawContent Text
-  | RawVisual DialogueVisual
-  deriving (Eq, Show)
+import Pitcher.Ingest.Parser (narrationP, NarrationParser)
+import Pitcher.NarrationTypes (Narration(..), Dialogue(..), DialogueVisual(..))
 
 
 data IngestReport = IngestReport
@@ -113,9 +91,14 @@ persistNarrationTx opts narration = do
   foldM (insertDialogueTx narrationUid) emptyReport $ zip [1 ..] narration.dialogues
 
 
-insertDialogueTx :: Int64 -> IngestReport -> (Int32, DialogueBlock) -> HT.Transaction IngestReport
-insertDialogueTx narrationUid report (dialogueOrd, dialogue) = do
-  dialogueUid <- HT.statement (narrationUid, dialogueOrd, dialogue.emotion) insertDialogueStmt
+insertDialogueTx :: Int64 -> IngestReport -> (Int32, Dialogue) -> HT.Transaction IngestReport
+insertDialogueTx narrationUid report (dialogueOrd, dialogue) = 
+  let
+    emotionFix = case dialogue.emotions of
+      [] -> Nothing
+      x : _ -> Just x
+  in do
+  dialogueUid <- HT.statement (narrationUid, dialogueOrd, emotionFix) insertDialogueStmt
   forM_ (zip [1 ..] dialogue.sentences) $ \(sentenceOrd, body) ->
     HT.statement (dialogueUid, sentenceOrd, body) insertDialogueSentenceStmt
   forM_ (zip [1 ..] dialogue.visuals) $ \(visualOrd, visual) -> HT.statement (dialogueUid, visualOrd, fromMaybe 1 visual.sentenceOrd, visual.description) insertDialogueVisualStmt
@@ -130,7 +113,7 @@ summarizeNarration :: Narration -> IngestReport
 summarizeNarration narration =
   foldl accumDialogue emptyReport narration.dialogues
   where
-  accumDialogue :: IngestReport -> DialogueBlock -> IngestReport
+  accumDialogue :: IngestReport -> Dialogue -> IngestReport
   accumDialogue acc dialogue = IngestReport {
       dialoguesCount = acc.dialoguesCount + 1
     , sentencesCount = acc.sentencesCount + length dialogue.sentences
@@ -151,11 +134,12 @@ dropBom :: Text -> Text
 dropBom txt = fromMaybe txt $ T.stripPrefix "\xfeff" txt
 
 
-type NarrationParser = Parsec Void Text
-
 parseNarration :: FilePath -> Text -> Either String Narration
 parseNarration inputPath sourceText =
   first errorBundlePretty $ runParser narrationP inputPath sourceText
+
+{-
+type NarrationParser = Parsec Void Text
 
 
 narrationP :: NarrationParser Narration
@@ -178,7 +162,7 @@ dialogueBlockP = do
 
 rawLineP :: NarrationParser (Maybe RawItem)
 rawLineP =
-      Nothing <$ try blankLineP
+    Nothing <$ try blankLineP
   <|> Just <$> try visualIndexedLineP
   <|> Just <$> try visualLineP
   <|> Just . RawContent <$> contentLineP
@@ -338,6 +322,8 @@ normalizeInline =
 isAsciiDigit :: Char -> Bool
 isAsciiDigit = isDigit
 
+-}
+
 tshow :: Show a => a -> Text
 tshow = T.pack . show
 
@@ -409,13 +395,13 @@ deleteDialogueTreeStmt =
     where uid in (select uid from target)
   |]
 
-insertDialogueStmt :: Statement (Int64, Int32, Text) Int64
+insertDialogueStmt :: Statement (Int64, Int32, Maybe Text) Int64
 insertDialogueStmt =
   [TH.singletonStatement|
     insert into prod.dialogue
       (narration_fk, ord, emotion)
     values
-      ($1::int8, $2::int4, $3::text)
+      ($1::int8, $2::int4, $3::text?)
     returning uid :: int8
   |]
 
@@ -438,3 +424,4 @@ insertDialogueVisualStmt =
       ($1::int8, $2::int4, $3::int4, $4::text)
     returning uid :: int8
   |]
+

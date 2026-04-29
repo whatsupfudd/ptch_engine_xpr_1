@@ -7,7 +7,7 @@ import qualified Data.Text as T
 
 import GHC.Generics (Generic)
 
-
+-- DB items:
 data DialogueRender = DialogueRender
   { uid :: Int64
   , ord :: Int32
@@ -33,3 +33,28 @@ data NarrationRender = NarrationRender
 dialogueSpokenText :: DialogueRender -> Text
 dialogueSpokenText dlg =  T.intercalate " " dlg.sentences
 
+-- Ingest items:
+newtype Narration = Narration {
+    dialogues :: [Dialogue]
+  }
+  deriving (Eq, Show)
+
+data Dialogue = Dialogue
+  { emotions :: [Text]
+  , sentences :: [Text]
+  , visuals :: [DialogueVisual]
+  }
+  deriving (Eq, Show)
+
+
+data DialogueVisual = DialogueVisual
+  { sentenceOrd :: Maybe Int32
+  , description :: Text
+  }
+  deriving (Eq, Show)
+
+
+data RawItem =
+    RawContent Text
+  | RawVisual DialogueVisual
+  deriving (Eq, Show)
