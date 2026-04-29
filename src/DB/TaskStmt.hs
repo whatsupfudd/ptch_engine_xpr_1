@@ -52,3 +52,37 @@ insertAssetStmt =
       ($1::text?, $2::uuid, $3::text?, $4::text, $5::int8, $6::text?)
     returning uid::int8
   |]
+
+
+selectDialogueSentenceBodiesByEidStmt :: Statement UUID (Vc.Vector (Int32, Text))
+selectDialogueSentenceBodiesByEidStmt =
+  [TH.vectorStatement|
+    select
+      s.ord::int4,
+      s.body::text
+    from prod.dialogue_sentence s
+    join prod.dialogue d on d.uid = s.dialogue_fk
+    where d.eid = $1::uuid
+    order by s.ord asc
+  |]
+
+selectDialogueVisualAnchorsByDialogueEidStmt :: Statement UUID (Vc.Vector (Int32, Maybe Int32))
+selectDialogueVisualAnchorsByDialogueEidStmt =
+  [TH.vectorStatement|
+    select
+      v.ord::int4,
+      v.sentence_ord::int4?
+    from prod.dialogue_visual v
+    join prod.dialogue d on d.uid = v.dialogue_fk
+    where d.eid = $1::uuid
+    order by v.ord asc
+  |]
+
+selectVisualDescriptionByEidStmt :: Statement UUID (Maybe Text)
+selectVisualDescriptionByEidStmt =
+  [TH.maybeStatement|
+    select v.body::text
+    from prod.dialogue_visual v
+    where v.eid = $1::uuid
+    limit 1
+  |]

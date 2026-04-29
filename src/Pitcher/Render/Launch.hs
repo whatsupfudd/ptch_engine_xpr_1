@@ -255,13 +255,13 @@ newRuntime jobUid initState = do
 
 launchRender :: RenderEnv -> UUID -> Pool -> IO RenderOutcome
 launchRender env narrationEid pool = do
-  mbUid <- runSessionOrThrow pool $ statement narrationEid Ls.selectNarrationUidStmt
+  mbUid <- runSessionOrThrow "selectNarrationUidStmt" pool $ statement narrationEid Ls.selectNarrationUidStmt
   case mbUid of
     Nothing -> pure $ RenderFailed { jobUid = 0
         , reason = "Narration " <> (T.pack . show) narrationEid <> " not found." 
         }
     Just narrationUid -> do
-      narration <- Lo.loadNarrationRender pool narrationUid
+      narration <- Lo.loadNarrationRender pool (narrationUid, narrationEid)
       if null narration.dialogues then
         throwIO . userError $ "Narration " <> show narrationEid <> " has no dialogues."
       else do

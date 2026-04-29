@@ -13,10 +13,9 @@ import Options.Runtime (RunOptions (..), PgDbConfig (..), AiConfig (..))
 import Options.Cli (WorkOpts (..))
 import DB.Connect (startPg)
 
-import Pitcher.Render.WorkTypes ( WorkerCaps(..) )
+import Pitcher.Render.WorkTypes ( WorkerCaps(..), LeasedNode(..) )
 import Pitcher.Render.TaskRunner (VideoRenderCfg (..), TaskRunnerEnv (..), runLeasedNodeToCompletion)
 import Pitcher.Render.WorkerMain (LeaseRecycleMode (..), WorkerLoopCfg (..), defaultWorkerLoopCfg, runWorkerLoop)
-import Pitcher.Render.WorkTypes (LeasedNode (..))
 import Pitcher.Render.GraphTypes (NodeExec (..), textToNodeExec)
 import Assets.Types (S3Conn (..))
 import Assets.S3Ops (makeS3Conn)
@@ -32,9 +31,8 @@ workCmd opts rtOpts =
         wCap = WorkerCaps {
           owner = opts.owner
           , lane = opts.lane
-          , hasGpu = opts.hasGpu
-          , vramMb = opts.vramMb
           , leaseSeconds = opts.leaseSeconds
+          , execFilter = Nothing
         }
         aiCfg = AiRunnerCfg {
             baseUrl = rtOpts.aiConf.server
@@ -44,8 +42,10 @@ workCmd opts rtOpts =
           , ttsFunctionEid = ttsFunctionEid
           , imageFunctionEid = imageFunctionEid
           , imageModel = rtOpts.aiConf.imageModel
-          , imagePromptPrefix = "This is a storyboard sketch inspired by Aurélie Charbonnier that aims to build the key cinematographic and design details of the scene. The visuals for the scene are described as: "
-          , imagePromptPostfix = " . The image is a portrait format, it is only the sketch and has no annotations or descriptions about the storyboard scene details, low resolution and uses a crayon drawing style."
+          -- , imagePromptPrefix = "This is a storyboard sketch inspired by Aurélie Charbonnier that aims to build the key cinematographic and design details of the scene. The visuals for the scene are described as: "
+          -- , imagePromptPostfix = " . The image is a portrait format, it is only the sketch and has no annotations or descriptions about the storyboard scene details, low resolution and uses a crayon drawing style."
+          , imagePromptPrefix = "This is a photorealistic image that aims to build the key cinematographic and design details of the scene, in the context of a UAE-centered environment. The visuals for the scene are described as: "
+          , imagePromptPostfix = ". The image is a portrait format (9:16), it has no annotations or descriptions about the scene details, it is low resolution."
           }
         s3Cfg = makeS3Conn rtOpts.s3store
         videoCfg = VideoRenderCfg {

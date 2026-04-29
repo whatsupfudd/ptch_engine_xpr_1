@@ -40,6 +40,7 @@ library
       Commands.Work
       DB.Connect
       DB.Helpers
+      DB.IngestStmt
       DB.LaunchOps
       DB.LaunchStmt
       DB.LeaseStmt

@@ -1,292 +1,119 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE OverloadedRecordDot #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 
 module Pitcher.Render.Producer
   ( ProducerCfg(..)
   , ProducerTick(..)
+
   , RenderGraph(..)
   , RenderNodeSpec(..)
-  , RenderEdgeSpec(..)
-  , NodeStage(..)
+  , RenderInputSpec(..)
+
+  , NodeLane(..)
   , NodeExec(..)
-  , NodeStatus(..)
-  , ExecRequirements(..)
-  , ExpectedArtifact(..)
-  , NarrationRender(..)
-  , DialogueRender(..)
-  , VisualRender(..)
+  , SourceKind(..)
+  , InputKind(..)
+
   , launchProducer
   , producerTick
   , buildRenderGraph
+
+  , mkAudioNode
+  , mkImageNode
+  , mkSegmentNode
+  , mkFinalNode
   ) where
 
 import Control.Exception (throwIO)
-import Control.Monad (forM, forM_, when, unless)
-import Control.Monad.Except (throwError, MonadError (catchError))
-import Control.Monad.Error.Class (MonadError)
+import Control.Monad.Error.Class (MonadError, throwError, catchError)
+import Control.Monad.Fail (MonadFail, fail)
+import Control.Monad (forM_, unless, when)
 
-import Data.Bifunctor (first)
-import qualified Data.ByteString.Lazy as Lbs
-import Data.Int (Int32, Int64)
-import qualified Data.List as L
+import Data.Int (Int64)
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
-import qualified Data.Text.Encoding as Te
-import Data.Time.Clock (UTCTime)
 import Data.UUID (UUID)
-import qualified Data.Vector as Vc
-
-import GHC.Generics (Generic)
+import qualified Data.UUID as Uu
 
 import qualified Data.Aeson as Ae
 import Data.Aeson ((.=))
 
 import Hasql.Pool (Pool)
-import qualified Hasql.Pool as Hp
+import Hasql.Session (statement)
 import qualified Hasql.Transaction as HT
-import Hasql.Session (Session, statement)
 
-import Pitcher.Render.Types
-import Pitcher.NarrationTypes (DialogueRender (..), VisualRender (..), NarrationRender (..), dialogueSpokenText)
-import Pitcher.Render.GraphTypes
-import DB.Helpers (runSessionOrThrow, runTx)
+import DB.Helpers ( runSessionOrThrow, runTx )
 import qualified DB.ProducerStmt as Ps
+import Pitcher.NarrationTypes ( DialogueRender(..), NarrationRender(..), VisualRender(..) )
+import Pitcher.Render.GraphTypes ( NodeLane(..), NodeExec(..), SourceKind(..), InputKind(..), nodeLaneToText, nodeExecToText, sourceKindToText, inputKindToText )
 import qualified DB.LaunchOps as Lo
-import Utils (sigText, tshow)
 
 
 --------------------------------------------------------------------------------
--- Entry points
+-- Producer config and tick report
 
-launchProducer :: ProducerCfg -> Pool -> UUID -> IO Int64
-launchProducer cfg pool narrationEid = do
-  mbUid <- runSessionOrThrow pool $ statement narrationEid Ps.selectNarrationUidStmt
-  case mbUid of
-    Nothing -> throwIO . userError $ "@[launchProducer] narration not found."
-    Just narrationUid -> do
-      narration <- Lo.loadNarrationRender pool narrationUid
-      when (null narration.dialogues) $
-        throwIO . userError $ "@[launchProducer] narration has no dialogues."
+data ProducerCfg = ProducerCfg
+  { renderVersionTag :: Text
+  , defaultMaxAttempts :: Int
 
-      jobUid <- Lo.loadOrCreateRenderJob pool narrationUid
-      let
-        graph = buildRenderGraph cfg narration
-      -- putStrLn $ "@[launchProducer] graph: " <> show graph
-      graphUid <- persistGraph pool jobUid graph
-      _ <- producerTick cfg pool jobUid
-      pure graphUid
+  , ttsVoice :: Maybe Text
+  , imageStyleTag :: Text
 
+  , segmentPolicyTag :: Text
+  , finalPolicyTag :: Text
+  , finalGapSeconds :: Double
+  , finalFadeSeconds :: Double
+  }
+  deriving (Eq, Show)
+
+data ProducerTick = ProducerTick
+  { promotedReady :: Int64
+  , recycledExpired :: Int64
+  , markedReusable :: Int64
+  , graphCompleted :: Bool
+  }
+  deriving (Eq, Show)
 
 --------------------------------------------------------------------------------
--- Pure graph builder
+-- Simplified graph model
 
-buildRenderGraph :: ProducerCfg -> NarrationRender -> RenderGraph
-buildRenderGraph cfg narration =
-  let 
-    audioNodes = [ mkAudioNode cfg dlg | dlg <- narration.dialogues ]
-    imageNodes = [ mkImageNode cfg dlg vis | dlg <- narration.dialogues, vis <- dlg.visuals ]
-    segmentNodes = [ mkSegmentNode cfg dlg | dlg <- narration.dialogues ]
-    finalNode = mkFinalNode cfg narration
+data RenderGraph = RenderGraph
+  { narrationUid :: Int64
+  , narrationEid :: UUID
+  , nodes :: [RenderNodeSpec]
+  }
+  deriving (Eq, Show)
 
-    edges =
-      [ RenderEdgeSpec (audioNodeKey dlg) (segmentNodeKey dlg) | dlg <- narration.dialogues ]
-      <> [ RenderEdgeSpec (imageNodeKey dlg vis) (segmentNodeKey dlg) | dlg <- narration.dialogues, vis <- dlg.visuals ]
-      <> [ RenderEdgeSpec (segmentNodeKey dlg) finalNodeKey | dlg <- narration.dialogues ]
-  in
-  RenderGraph {
-      schemaVer = cfg.graphSchemaVer
-    , narrationUid = narration.narrationUid
-    , nodes = audioNodes <> imageNodes <> segmentNodes <> [finalNode]
-    , edges = edges
-    }
+data RenderNodeSpec = RenderNodeSpec
+  { deriveKey :: Text
+  , lane :: NodeLane
+  , exec :: NodeExec
+  , ord :: Int
 
-mkAudioNode :: ProducerCfg -> DialogueRender -> RenderNodeSpec
-mkAudioNode cfg dlg =
-  let
-    out = ExpectedArtifact {
-            kind = "audio"
-          , fileName = "dialogue_" <> tshow dlg.ord <> ".mp3"
-          , contentType = "audio/mpeg"
-          }
-  in
-  RenderNodeSpec {
-      key = audioNodeKey dlg
-    , stage = AudioStage
-    , exec = AiTextToSpeechExec
-    , ord = dlg.ord
-    , dialogueFk = Just dlg.uid
-    , visualOrd = Nothing
-    , sourceSig = sigText $
-        Ae.object
-          [ "v" .= cfg.renderVersionTag
-          , "stage" .= ("audio" :: Text)
-          , "dialogueUid" .= dlg.uid
-          , "emotion" .= dlg.emotion
-          , "spokenText" .= dialogueSpokenText dlg
-          ]
-    , payload =
-        Ae.object
-          [ "task" .= ("audio" :: Text)
-          , "dialogueUid" .= dlg.uid
-          , "emotion" .= dlg.emotion
-          , "spokenText" .= dialogueSpokenText dlg
-          ]
-    , requirements =
-        ExecRequirements
-          { lane = "ai"
-          , needsGpu = False
-          , minVramMb = Nothing
-          , maxRuntimeSec = 180
-          , scratchMb = 128
-          }
-    , outputs = [out]
-    , maxAttempts = cfg.defaultMaxAttempts
-    }
+  , sourceKind :: Maybe SourceKind
+  , sourceEid :: Maybe UUID
 
+  , params :: Ae.Value
+  , artifactKind :: Text
+  , inputs :: [RenderInputSpec]
 
-mkImageNode :: ProducerCfg -> DialogueRender -> VisualRender -> RenderNodeSpec
-mkImageNode cfg dlg vis =
-  let
-    out = ExpectedArtifact {
-        kind = "image"
-      , fileName = "visual_" <> tshow dlg.ord <> "_" <> tshow vis.ord <> ".png"
-      , contentType = "image/png"
-      }
-  in
-  RenderNodeSpec {
-      key = imageNodeKey dlg vis
-    , stage = ImageStage
-    , exec = AiTextToImageExec
-    , ord = dlg.ord * 1000 + vis.ord
-    , dialogueFk = Just dlg.uid
-    , visualOrd = Just vis.ord
-    , sourceSig = sigText $
-        Ae.object
-          [ "v" .= cfg.renderVersionTag
-          , "stage" .= ("image" :: Text)
-          , "dialogueUid" .= dlg.uid
-          , "visualOrd" .= vis.ord
-          , "sentenceIx" .= vis.sentenceIx
-          , "description" .= vis.description
-          ]
-    , payload =
-        Ae.object
-          [ "task" .= ("image" :: Text)
-          , "dialogueUid" .= dlg.uid
-          , "visualOrd" .= vis.ord
-          , "sentenceIx" .= vis.sentenceIx
-          , "description" .= vis.description
-          ]
-    , requirements =
-        ExecRequirements
-          { lane = "ai"
-          , needsGpu = False
-          , minVramMb = Nothing
-          , maxRuntimeSec = 300
-          , scratchMb = 256
-          }
-    , outputs = [out]
-    , maxAttempts = cfg.defaultMaxAttempts
-    }
+  , maxAttempts :: Int
+  }
+  deriving (Eq, Show)
 
-mkSegmentNode :: ProducerCfg -> DialogueRender -> RenderNodeSpec
-mkSegmentNode cfg dlg =
-  let
-    out = ExpectedArtifact {
-            kind = "segment"
-          , fileName = "segment_" <> tshow dlg.ord <> ".mp4"
-          , contentType = "video/mp4"
-          }
-    audioSig = (mkAudioNode cfg dlg).sourceSig
-    imageSigs = [ (mkImageNode cfg dlg vis).sourceSig | vis <- dlg.visuals ]
-  in
-  RenderNodeSpec {
-      key = segmentNodeKey dlg
-    , stage = SegmentStage
-    , exec = FfmpegSegmentExec
-    , ord = dlg.ord
-    , dialogueFk = Just dlg.uid
-    , visualOrd = Nothing
-    , sourceSig = sigText $
-        Ae.object
-          [ "v" .= cfg.renderVersionTag
-          , "stage" .= ("segment" :: Text)
-          , "dialogueUid" .= dlg.uid
-          , "audioSig" .= audioSig
-          , "imageSigs" .= imageSigs
-          ]
-    , payload =
-        Ae.object
-          [ "task" .= ("segment" :: Text)
-          , "dialogueUid" .= dlg.uid
-          , "audioNodeKey" .= audioNodeKey dlg
-          , "imageNodeKeys" .= [ imageNodeKey dlg vis | vis <- dlg.visuals ]
-          , "spokenText" .= dialogueSpokenText dlg
-          ]
-    , requirements =
-        ExecRequirements
-          { lane = "video"
-          , needsGpu = True
-          , minVramMb = Just 2048
-          , maxRuntimeSec = 1200
-          , scratchMb = 4096
-          }
-    , outputs = [out]
-    , maxAttempts = cfg.defaultMaxAttempts
-    }
-
-mkFinalNode :: ProducerCfg -> NarrationRender -> RenderNodeSpec
-mkFinalNode cfg narration =
-  let
-    out = ExpectedArtifact
-          { kind = "final"
-          , fileName = "narration_" <> tshow narration.narrationUid <> ".mp4"
-          , contentType = "video/mp4"
-          }
-    segmentSigs = [ (mkSegmentNode cfg dlg).sourceSig | dlg <- narration.dialogues ]
-  in
-  RenderNodeSpec {
-        key = finalNodeKey
-      , stage = FinalStage
-      , exec = FfmpegConcatExec
-      , ord = 1000000000
-      , dialogueFk = Nothing
-      , visualOrd = Nothing
-      , sourceSig = sigText $
-          Ae.object
-            [ "v" .= cfg.renderVersionTag
-            , "stage" .= ("final" :: Text)
-            , "segmentSigs" .= segmentSigs
-            , "gapSeconds" .= cfg.finalGapSeconds
-            , "fadeSeconds" .= cfg.finalFadeSeconds
-            ]
-      , payload =
-          Ae.object
-            [ "task" .= ("final" :: Text)
-            , "segmentNodeKeys" .= [ segmentNodeKey dlg | dlg <- narration.dialogues ]
-            , "gapSeconds" .= cfg.finalGapSeconds
-            , "fadeSeconds" .= cfg.finalFadeSeconds
-            ]
-      , requirements =
-          ExecRequirements
-            { lane = "video"
-            , needsGpu = False
-            , minVramMb = Nothing
-            , maxRuntimeSec = 1800
-            , scratchMb = 8192
-            }
-      , outputs = [out]
-      , maxAttempts = cfg.defaultMaxAttempts
-      }
-
-
-producerTick :: ProducerCfg -> Pool -> Int64 -> IO ProducerTick
-producerTick cfg pool jobUid = do
-  rez <- runTx pool $ producerTickTx cfg jobUid
-  putStrLn $ "@[producerTick] tick: " <> show rez
-  pure rez
+data RenderInputSpec = RenderInputSpec
+  { ord :: Int
+  , inputKind :: InputKind
+  , refKind :: Text
+  , refEid :: Maybe UUID
+  , refDeriveKey :: Maybe Text
+  , role :: Maybe Text
+  }
+  deriving (Eq, Show)
 
 
 instance MonadError Text HT.Transaction where
@@ -297,87 +124,346 @@ instance MonadFail HT.Transaction where
   fail = throwError . T.pack
 
 
-producerTickTx :: ProducerCfg -> Int64 -> HT.Transaction ProducerTick
-producerTickTx cfg jobUid = do
-  lockOk <- HT.statement jobUid Ps.tryAdvisoryJobLockStmt
-  unless lockOk $
-    fail $ "@[producerTick] already being advanced by another producer: " <> show jobUid
 
-  graphUid <- HT.statement jobUid Ps.findGraphUidStmt >>= \case
-    Nothing -> fail $ "@[producerTick] render graph not found for render job: " <> show jobUid
-    Just uid -> pure uid
+--------------------------------------------------------------------------------
+-- Entry point
 
-  -- , cfg.defaultLeaseSeconds
-  recycled <- HT.statement graphUid Ps.recycleExpiredLeasesStmt
-  reusable <- HT.statement graphUid Ps.markReusableNodesDoneStmt
-  promoted <- HT.statement graphUid Ps.promoteReadyNodesStmt
-  completed <- HT.statement jobUid Ps.finalizeGraphIfDoneStmt
+launchProducer :: ProducerCfg -> Pool -> UUID -> IO Int64
+launchProducer cfg pool narrationEid = do
+  narrationUid <-
+    runSessionOrThrow "selectNarrationUidStmt" pool (statement narrationEid Ps.selectNarrationUidStmt) >>= \case
+      Nothing ->
+        throwIO . userError $
+          "@[launchProducer] narration not found: " <> Uu.toString narrationEid
+      Just uid ->
+        pure uid
 
+  narration <- Lo.loadNarrationRender pool (narrationUid, narrationEid)
+
+  when (null narration.dialogues) $
+    throwIO . userError $ "@[launchProducer] narration has no dialogues."
+
+  jobUid <- runSessionOrThrow "createRenderJobStmt" pool $ statement narrationUid Ps.createRenderJobStmt
+  _ <- runSessionOrThrow "markPreviousJobsSupersededStmt" pool $ statement jobUid Ps.markPreviousJobsSupersededStmt
+
+  let graph = buildRenderGraph cfg narration
+  persistGraph pool jobUid graph
+  _ <- producerTick cfg pool jobUid
+  pure jobUid
+
+
+--------------------------------------------------------------------------------
+-- Graph builder
+
+buildRenderGraph :: ProducerCfg -> NarrationRender -> RenderGraph
+buildRenderGraph cfg narration =
   let
-    tick = ProducerTick { 
-        promotedReady = promoted
-      , recycledExpired = recycled
-        , markedReusable = reusable
-        , graphCompleted = completed
-        }
+    audioNodes =
+      [ mkAudioNode cfg dlg
+      | dlg <- narration.dialogues
+      ]
+
+    imageNodes =
+      [ mkImageNode cfg dlg vis
+      | dlg <- narration.dialogues
+      , vis <- dlg.visuals
+      ]
+
+    segmentNodes =
+      [ mkSegmentNode cfg dlg
+      | dlg <- narration.dialogues
+      ]
+
+    finalNode =
+      mkFinalNode cfg narration
+  in
+  RenderGraph
+    { narrationUid = narration.narrationUid
+    , narrationEid = narration.eid
+    , nodes = audioNodes <> imageNodes <> segmentNodes <> [finalNode]
+    }
+
+--------------------------------------------------------------------------------
+-- Node builders
+
+mkAudioNode :: ProducerCfg -> DialogueRender -> RenderNodeSpec
+mkAudioNode cfg dlg =
+  let
+    dkey =
+      deriveKeyText
+        [ "tts"
+        , Uu.toText dlg.eid
+        , fromMaybe "" cfg.ttsVoice
+        , cfg.renderVersionTag
+        ]
+
+  in
+  RenderNodeSpec
+    { deriveKey = dkey
+    , lane = GenerateLane
+    , exec = AiTextToSpeechExec
+    , ord = fromIntegral dlg.ord
+
+    , sourceKind = Just DialogueSource
+    , sourceEid = Just dlg.eid
+
+    , params =
+        Ae.object
+          [ "voice" .= cfg.ttsVoice
+          , "renderVersionTag" .= cfg.renderVersionTag
+          ]
+
+    , artifactKind = "audio"
+
+    , inputs =
+        [ sourceInput 1 "dialogue" dlg.eid (Just "dialogue")
+        ]
+
+    , maxAttempts = cfg.defaultMaxAttempts
+    }
+
+mkImageNode :: ProducerCfg -> DialogueRender -> VisualRender -> RenderNodeSpec
+mkImageNode cfg _dlg vis =
+  let
+    dkey = deriveKeyText [ "image", Uu.toText vis.eid, cfg.imageStyleTag, cfg.renderVersionTag ]
+  in
+  RenderNodeSpec
+    { deriveKey = dkey
+    , lane = GenerateLane
+    , exec = AiTextToImageExec
+    , ord = fromIntegral vis.ord
+    , sourceKind = Just VisualSource
+    , sourceEid = Just vis.eid
+    , params = Ae.object [ "imageStyleTag" .= cfg.imageStyleTag, "renderVersionTag" .= cfg.renderVersionTag ]
+    , artifactKind = "image"
+    , inputs = [ sourceInput 1 "visual" vis.eid (Just "visual") ]
+    , maxAttempts = cfg.defaultMaxAttempts
+    }
+
+mkSegmentNode :: ProducerCfg -> DialogueRender -> RenderNodeSpec
+mkSegmentNode cfg dlg =
+  let
+    audioNode =
+      mkAudioNode cfg dlg
+
+    imageNodes =
+      [ mkImageNode cfg dlg vis
+      | vis <- dlg.visuals
+      ]
+
+    imageTimingParts =
+      [ Uu.toText vis.eid
+          <> ":"
+          <> maybe "" tshow vis.sentenceIx
+      | vis <- dlg.visuals
+      ]
+
+    dkey =
+      deriveKeyText $
+        [ "segment"
+        , audioNode.deriveKey
+        , cfg.segmentPolicyTag
+        , cfg.renderVersionTag
+        ]
+        <> map (.deriveKey) imageNodes
+        <> imageTimingParts
+
+    nodeInputs =
+      [ nodeInput 1 audioNode.deriveKey (Just "audio")
+      ]
+      <> zipWith
+          (\ix n -> nodeInput ix n.deriveKey (Just "image"))
+          [2..]
+          imageNodes
+
+  in
+  RenderNodeSpec
+    { deriveKey = dkey
+    , lane = FuseLane
+    , exec = FfmpegSegmentExec
+    , ord = fromIntegral dlg.ord
+
+    , sourceKind = Just DialogueSource
+    , sourceEid = Just dlg.eid
+
+    , params =
+        Ae.object
+          [ "segmentPolicyTag" .= cfg.segmentPolicyTag
+          , "renderVersionTag" .= cfg.renderVersionTag
+          ]
+
+    , artifactKind = "segment"
+
+    , inputs = nodeInputs
+
+    , maxAttempts = cfg.defaultMaxAttempts
+    }
+
+mkFinalNode :: ProducerCfg -> NarrationRender -> RenderNodeSpec
+mkFinalNode cfg narration =
+  let
+    segmentNodes =
+      [ mkSegmentNode cfg dlg
+      | dlg <- narration.dialogues
+      ]
+
+    dkey =
+      deriveKeyText $
+        [ "final"
+        , Uu.toText narration.eid
+        , cfg.finalPolicyTag
+        , cfg.renderVersionTag
+        , tshow cfg.finalGapSeconds
+        , tshow cfg.finalFadeSeconds
+        ]
+        <> map (.deriveKey) segmentNodes
+
+    nodeInputs =
+      zipWith
+        (\ix n -> nodeInput ix n.deriveKey (Just "segment"))
+        [1..]
+        segmentNodes
+
+  in
+  RenderNodeSpec
+    { deriveKey = dkey
+    , lane = FinalizeLane
+    , exec = FfmpegConcatExec
+    , ord = 1000000000
+
+    , sourceKind = Just NarrationSource
+    , sourceEid = Just narration.eid
+
+    , params =
+        Ae.object
+          [ "finalPolicyTag" .= cfg.finalPolicyTag
+          , "gapSeconds" .= cfg.finalGapSeconds
+          , "fadeSeconds" .= cfg.finalFadeSeconds
+          , "renderVersionTag" .= cfg.renderVersionTag
+          ]
+
+    , artifactKind = "final"
+
+    , inputs = nodeInputs
+
+    , maxAttempts = cfg.defaultMaxAttempts
+    }
+
+--------------------------------------------------------------------------------
+-- Producer tick
+
+producerTick :: ProducerCfg -> Pool -> Int64 -> IO ProducerTick
+producerTick cfg pool jobUid = do
+  tick <- runTx "producerTickTx" pool $ producerTickTx cfg jobUid
+  putStrLn $ "@[producerTick] tick: " <> show tick
   pure tick
+
+producerTickTx :: ProducerCfg -> Int64 -> HT.Transaction ProducerTick
+producerTickTx _cfg jobUid = do
+  lockOk <- HT.statement (fromIntegral jobUid) Ps.tryAdvisoryJobLockStmt
+
+  unless lockOk $ fail $
+      "@[producerTick] render job already being advanced by another producer: " <> show jobUid
+
+  recycled <- HT.statement jobUid Ps.recycleExpiredLeasesStmt
+  reusable <- HT.statement jobUid Ps.markReusableNodesDoneStmt
+  promoted <- HT.statement jobUid Ps.promoteReadyNodesStmt
+  completed <- HT.statement jobUid Ps.finalizeRenderJobStmt
+
+  pure
+    ProducerTick
+      { promotedReady = promoted
+      , recycledExpired = recycled
+      , markedReusable = reusable
+      , graphCompleted = completed
+      }
 
 --------------------------------------------------------------------------------
 -- Graph persistence
 
-persistGraph :: Pool -> Int64 -> RenderGraph -> IO Int64
+persistGraph :: Pool -> Int64 -> RenderGraph -> IO ()
 persistGraph pool jobUid graph =
-  runTx pool $ persistGraphTx jobUid graph
+  runTx "persistGraphTx" pool $ persistGraphTx jobUid graph
 
 
-persistGraphTx :: Int64 -> RenderGraph -> HT.Transaction Int64
-persistGraphTx jobUid graph = do
-  graphUid <- HT.statement (jobUid, graph.schemaVer) Ps.insertRenderGraphStmt
+persistGraphTx :: Int64 -> RenderGraph -> HT.Transaction ()
+persistGraphTx jobUid graph =
+  forM_ graph.nodes $ \node -> do
+    nodeUid <-
+      HT.statement
+        ( jobUid
+        , node.deriveKey
+        , nodeLaneToText node.lane
+        , nodeExecToText node.exec
+        , fromIntegral node.ord
+        , fmap sourceKindToText node.sourceKind
+        , node.sourceEid
+        , node.params
+        , node.artifactKind
+        , fromIntegral node.maxAttempts
+        )
+        Ps.insertRenderNodeStmt
 
-  nodeUidByKey <- fmap toNodeMap $
-    forM graph.nodes $ \node ->
-      let
-        nodeParams = (
-            graphUid
-          , node.key
-          , stageText node.stage
-          , nodeExecToText node.exec
-          , node.ord
-          , node.dialogueFk
-          , node.visualOrd
-          , outputKind node.outputs
-          , node.sourceSig
-          , Ae.toJSON node.requirements
-          , node.payload
-          , node.maxAttempts
-          )
-      in do
-      nodeUid <- HT.statement nodeParams Ps.insertRenderNodeStmt
-      pure (node.key, nodeUid)
+    forM_ node.inputs $ \input ->
+      HT.statement
+        ( nodeUid
+        , fromIntegral input.ord
+        , inputKindToText input.inputKind
+        , input.refKind
+        , input.refEid
+        , input.refDeriveKey
+        , input.role
+        )
+        Ps.insertRenderInputStmt
 
-  HT.statement graphUid Ps.deleteRenderEdgesStmt
+--------------------------------------------------------------------------------
+-- Input builders
 
-  forM_ graph.edges $ \edge -> do
-    fromUid <- lookupNodeOrFail edge.fromKey nodeUidByKey
-    toUid <- lookupNodeOrFail edge.toKey nodeUidByKey
-    HT.statement (graphUid, fromUid, toUid) Ps.insertRenderEdgeStmt
+sourceInput :: Int -> Text -> UUID -> Maybe Text -> RenderInputSpec
+sourceInput ordVal refKind refEid role =
+  RenderInputSpec
+    { ord = ordVal
+    , inputKind = SourceInput
+    , refKind = refKind
+    , refEid = Just refEid
+    , refDeriveKey = Nothing
+    , role = role
+    }
 
-  pure graphUid
-
-
-outputKind :: [ExpectedArtifact] -> Maybe Text
-outputKind outputs =
-  case outputs of
-    [] -> Nothing
-    x : _ -> Just x.kind
-
-
-toNodeMap :: [(Text, Int64)] -> [(Text, Int64)]
-toNodeMap = id
+nodeInput :: Int -> Text -> Maybe Text -> RenderInputSpec
+nodeInput ordVal refDeriveKey role =
+  RenderInputSpec
+    { ord = ordVal
+    , inputKind = NodeInput
+    , refKind = "render_node"
+    , refEid = Nothing
+    , refDeriveKey = Just refDeriveKey
+    , role = role
+    }
 
 
-lookupNodeOrFail :: Text -> [(Text, Int64)] -> HT.Transaction Int64
-lookupNodeOrFail key pairs =
-  case L.lookup key pairs of
-    Nothing -> fail $ "@[lookupNodeOrFail] missing graph node key " <> T.unpack key
-    Just uid -> pure uid
+--------------------------------------------------------------------------------
+-- Derived-key helper
+--
+-- This is intentionally a single identity mechanism replacing the old
+-- node-key/source-signature pair.
+--
+-- If you already have a SHA-256 or UUIDv5 helper in Utils, replace this
+-- implementation with that helper. The important semantic property is that
+-- the key is deterministic from stable source UUIDs and render-policy params.
+
+deriveKeyText :: [Text] -> Text
+deriveKeyText parts =
+  "dk:" <> T.intercalate "\x1f" (map escapePart parts)
+
+escapePart :: Text -> Text
+escapePart =
+  T.concatMap escapeChar
+  where
+    escapeChar '\x1f' = "\\x1f"
+    escapeChar '\\' = "\\\\"
+    escapeChar c = T.singleton c
+
+tshow :: Show a => a -> Text
+tshow =
+  T.pack . show

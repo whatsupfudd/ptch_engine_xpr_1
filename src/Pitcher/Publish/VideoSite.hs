@@ -485,7 +485,7 @@ downloadAssetToPath s3Def assetEid outPath = do
 
 loadAssetPublishDefaults :: Pool -> AssetRef -> IO AssetPublishDefaults
 loadAssetPublishDefaults pool assetRef =
-  runSessionOrThrow pool $
+  runSessionOrThrow "selectAssetPublishDefaultsStmt" pool $
     statement assetRef.eid selectAssetPublishDefaultsStmt >>= \case
       Nothing ->
         pure AssetPublishDefaults

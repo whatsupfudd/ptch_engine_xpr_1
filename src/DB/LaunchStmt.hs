@@ -58,10 +58,10 @@ selectNarrationUidStmt =
 
 
 -- From NarrationID:
-selectDialoguesStmt :: Statement Int64 (Vc.Vector (Int64, Int32, Text))
+selectDialoguesStmt :: Statement Int64 (Vc.Vector (Int64, UUID, Int32, Text))
 selectDialoguesStmt =
   [TH.vectorStatement|
-    select d.uid::int8, d.ord::int4, d.emotion::text
+    select d.uid::int8, d.eid::uuid, d.ord::int4, d.emotion::text
     from prod.dialogue d
     where d.narration_fk = $1::int8
     order by d.ord asc
@@ -79,10 +79,11 @@ selectSentencesStmt =
   |]
 
 
-selectVisualsStmt :: Statement Int64 (Vc.Vector (Int64, Maybe Int32, Text))
+selectVisualsStmt :: Statement Int64 (Vc.Vector (Int64, Int64, UUID, Maybe Int32, Text))
 selectVisualsStmt =
   [TH.vectorStatement|
-    select v.dialogue_fk::int8, v.sentence_ord::int4?, v.body::text
+    select
+      v.uid::int8, v.dialogue_fk::int8, v.eid::uuid, v.sentence_ord::int4?, v.body::text
     from prod.dialogue_visual v
     join prod.dialogue d on d.uid = v.dialogue_fk
     where d.narration_fk = $1::int8

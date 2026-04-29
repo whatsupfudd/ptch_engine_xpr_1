@@ -1,39 +1,74 @@
 {-# LANGUAGE DuplicateRecordFields #-}
-{-# LANGUAGE QuasiQuotes #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
 
--- ( Narration(..), DialogueBlock(..), DialogueVisual(..), ingest)
-module Pitcher.Ingest where
+module Pitcher.Ingest
+  ( IngestReport(..)
+  , ingest
+  , parseNarration
+  , validateNarration
+  , dialogueFingerprint
+  , visualFingerprint
+  ) where
 
 import Control.Exception (throwIO)
-import Control.Monad (foldM, forM_, unless, void, when)
+import Control.Monad (foldM, forM_, replicateM, unless, void, when)
+import Control.Monad.Except (throwError, MonadError (catchError))
+import Control.Monad.Error.Class (MonadError)
+
 import Data.Bifunctor (first)
 import qualified Data.ByteString as BS
-import Data.Int (Int64, Int32)
-import Data.Maybe (catMaybes, fromMaybe)
+import Data.Int (Int32, Int64)
+import qualified Data.Map.Strict as Mp
+import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
-import qualified Data.Text.Encoding  as TE
+import qualified Data.Text.Encoding as TE
 import qualified Data.Text.IO as TIO
-import Data.Void (Void)
+import Data.UUID (UUID)
+import qualified Data.UUID as Uu
+import qualified Data.UUID.V4 as U4
+import qualified Data.Vector as Vc
 
 import Hasql.Pool (Pool)
 import qualified Hasql.Pool as Pool
 import Hasql.Session (Session)
-import Hasql.Statement (Statement)
-import qualified Hasql.TH as TH
 import qualified Hasql.Transaction as HT
 import qualified Hasql.Transaction.Sessions as HTS
 
-import Text.Megaparsec ( Parsec, eof, errorBundlePretty, lookAhead, manyTill, runParser, takeWhile1P
-    , takeWhileP, try, (<|>), some, many )
-import Text.Megaparsec.Char ( char, eol, hspace, hspace1, string, space )
+import Text.Megaparsec
+  ( eof
+  , errorBundlePretty
+  , runParser
+  )
 
-import Options.Cli (IngestOpts (..))
-import Data.Char (isDigit)
+import Options.Cli
+  ( IngestOpts(..)
+  )
 
-import Pitcher.Ingest.Parser (narrationP, NarrationParser)
-import Pitcher.NarrationTypes (Narration(..), Dialogue(..), DialogueVisual(..))
+import Pitcher.Ingest.Parser
+  ( narrationP
+  )
 
+import Pitcher.NarrationTypes
+  ( Dialogue(..)
+  , DialogueVisual(..)
+  , Narration(..)
+  )
+
+import qualified DB.IngestStmt as Is
+
+
+instance MonadError Text HT.Transaction where
+  throwError = fail . T.unpack
+  catchError = catchError
+
+instance MonadFail HT.Transaction where
+  fail = throwError . T.pack
+
+
+
+--------------------------------------------------------------------------------
+-- Reports
 
 data IngestReport = IngestReport
   { dialoguesCount :: Int
@@ -50,378 +85,483 @@ emptyReport =
     , visualsCount = 0
     }
 
+renderReport :: IngestReport -> Text
+renderReport report =
+  tshow report.dialoguesCount <> " dialogues, "
+    <> tshow report.sentencesCount <> " sentences, "
+    <> tshow report.visualsCount <> " visuals"
+
+summarizeNarration :: Narration -> IngestReport
+summarizeNarration narration =
+  foldl accumDialogue emptyReport narration.dialogues
+  where
+    accumDialogue :: IngestReport -> Dialogue -> IngestReport
+    accumDialogue acc dialogue =
+      IngestReport
+        { dialoguesCount = acc.dialoguesCount + 1
+        , sentencesCount = acc.sentencesCount + length dialogue.sentences
+        , visualsCount = acc.visualsCount + length dialogue.visuals
+        }
+
 --------------------------------------------------------------------------------
 -- Top-level command
 
 ingest :: IngestOpts -> Pool -> IO ()
 ingest opts pool = do
   sourceText <- readUtf8TextFile opts.inputPath
+  narrationEid <- U4.nextRandom
+
   narration <- either (throwIO . userError) pure $ parseNarration opts.inputPath sourceText
-  let
-    previewReport = summarizeNarration narration
+
+  case validateNarration narration of
+    Left errs -> throwIO . userError $ "Invalid narration:\n" <> T.unpack (T.unlines errs)
+    Right () -> pure ()
+
+  let previewReport = summarizeNarration narration
 
   if opts.validateOnly then do
-      TIO.putStrLn $ "Validated narration from " <> T.pack opts.inputPath
-        <> ": " <> renderReport previewReport
-      putStrLn $ "narration: " <> show narration
+    TIO.putStrLn $
+      "Validated narration from "
+        <> T.pack opts.inputPath
+        <> ": "
+        <> renderReport previewReport
+    putStrLn $ "narration: " <> show narration
   else do
-    report <- runPoolSession pool $ HTS.transaction HTS.Serializable HTS.Write $ persistNarrationTx opts narration
-    TIO.putStrLn $ "Ingested narration '" <> opts.slug <> "' from " <> T.pack opts.inputPath
-            <> ": " <> renderReport report
+    -- narrationEid <- resolveNarrationEid opts.slug
+
+    freshDialogueEids <- replicateM (length narration.dialogues) U4.nextRandom
+    freshVisualEids <- replicateM (visualCount narration) U4.nextRandom
+
+    report <- runPoolSession pool $
+        HTS.transaction HTS.Serializable HTS.Write $ persistNarrationTx opts narrationEid freshDialogueEids freshVisualEids narration
+
+    TIO.putStrLn $ "Ingested narration '" <> T.pack (Uu.toString narrationEid) <> "' from "
+        <> T.pack opts.inputPath <> ": " <> renderReport report
 
 
-renderReport :: IngestReport -> Text
-renderReport report = tshow report.dialoguesCount <> " dialogues, "
-    <> tshow report.sentencesCount <> " sentences, "
-    <> tshow report.visualsCount <> " visuals"
+resolveNarrationEid :: Text -> IO UUID
+resolveNarrationEid txt =
+  case Uu.fromText txt of
+    Nothing ->
+      throwIO . userError $
+        "Narration identity must be a UUID; got: " <> T.unpack txt
+    Just eid ->
+      pure eid
 
+visualCount :: Narration -> Int
+visualCount narration =
+  sum [ length dialogue.visuals | dialogue <- narration.dialogues ]
 
-runPoolSession :: Pool -> Session a -> IO a
-runPoolSession pool session = do
-  result <- Pool.use pool session
-  case result of
-    Left err -> throwIO . userError $ "Database session failed: " <> show err
-    Right value -> pure value
+--------------------------------------------------------------------------------
+-- Validation
 
+validateNarration :: Narration -> Either [Text] ()
+validateNarration narration =
+  let errs =
+        concat
+          [ validateDialogue dialogueOrd dialogue
+          | (dialogueOrd, dialogue) <- withOrd32 narration.dialogues
+          ]
+  in
+    if null errs
+      then Right ()
+      else Left errs
 
-persistNarrationTx :: IngestOpts -> Narration -> HT.Transaction IngestReport
-persistNarrationTx opts narration = do
-  narrationUid <- HT.statement (opts.slug, opts.title, opts.language, opts.speaker) upsertKeynoteStmt
-  HT.statement narrationUid deleteDialogueTreeStmt
-  foldM (insertDialogueTx narrationUid) emptyReport $ zip [1 ..] narration.dialogues
+validateDialogue :: Int32 -> Dialogue -> [Text]
+validateDialogue dialogueOrd dialogue =
+  let sentenceCount = length dialogue.sentences
+  in
+    concat
+      [ validateVisual dialogueOrd visualOrd sentenceCount visual
+      | (visualOrd, visual) <- withOrd32 dialogue.visuals
+      ]
 
+validateVisual :: Int32 -> Int32 -> Int -> DialogueVisual -> [Text]
+validateVisual dialogueOrd visualOrd sentenceCount visual =
+  case visual.sentenceOrd of
+    Nothing ->
+      []
+    Just ix
+      | ix < 1 ->
+          [ "Dialogue "
+              <> tshow dialogueOrd
+              <> ", visual "
+              <> tshow visualOrd
+              <> " references sentence "
+              <> tshow ix
+              <> ", but sentence references start at 1."
+          ]
+      | fromIntegral ix > sentenceCount ->
+          [ "Dialogue "
+              <> tshow dialogueOrd
+              <> ", visual "
+              <> tshow visualOrd
+              <> " references sentence "
+              <> tshow ix
+              <> ", but the dialogue has only "
+              <> tshow sentenceCount
+              <> " sentence(s)."
+          ]
+      | otherwise ->
+          []
 
-insertDialogueTx :: Int64 -> IngestReport -> (Int32, Dialogue) -> HT.Transaction IngestReport
-insertDialogueTx narrationUid report (dialogueOrd, dialogue) = 
-  let
-    emotionFix = case dialogue.emotions of
-      [] -> Nothing
-      x : _ -> Just x
-  in do
-  dialogueUid <- HT.statement (narrationUid, dialogueOrd, emotionFix) insertDialogueStmt
-  forM_ (zip [1 ..] dialogue.sentences) $ \(sentenceOrd, body) ->
-    HT.statement (dialogueUid, sentenceOrd, body) insertDialogueSentenceStmt
-  forM_ (zip [1 ..] dialogue.visuals) $ \(visualOrd, visual) -> HT.statement (dialogueUid, visualOrd, fromMaybe 1 visual.sentenceOrd, visual.description) insertDialogueVisualStmt
-  pure $ IngestReport {
-        dialoguesCount = report.dialoguesCount + 1
+--------------------------------------------------------------------------------
+-- Persistence
+
+persistNarrationTx
+  :: IngestOpts
+  -> UUID
+  -> [UUID]
+  -> [UUID]
+  -> Narration
+  -> HT.Transaction IngestReport
+persistNarrationTx opts narrationEid freshDialogueEids freshVisualEids narration = do
+  narrationUid <-
+    HT.statement
+      ( narrationEid
+      , nonBlankMaybe opts.title
+      , opts.language
+      , opts.speaker
+      )
+      Is.upsertNarrationStmt
+
+  dialogueRows <-
+    HT.statement
+      narrationUid
+      Is.selectDialogueIdentityRowsStmt
+
+  visualRows <-
+    HT.statement
+      narrationUid
+      Is.selectVisualIdentityRowsStmt
+
+  plan <-
+    case buildInsertPlan narration dialogueRows visualRows freshDialogueEids freshVisualEids of
+      Left err ->
+        fail (T.unpack err)
+      Right ok ->
+        pure ok
+
+  HT.statement narrationUid Is.deleteDialogueTreeStmt
+
+  foldM
+    (insertDialogueTx narrationUid)
+    emptyReport
+    plan.dialogues
+
+--------------------------------------------------------------------------------
+-- Insert plan
+
+data InsertPlan = InsertPlan
+  { dialogues :: [DialogueInsert]
+  }
+  deriving (Eq, Show)
+
+data DialogueInsert = DialogueInsert
+  { eid :: UUID
+  , ord :: Int32
+  , emotion :: Text
+  , fingerprint :: Text
+  , sentences :: [(Int32, Text)]
+  , visuals :: [VisualInsert]
+  }
+  deriving (Eq, Show)
+
+data VisualInsert = VisualInsert
+  { eid :: UUID
+  , ord :: Int32
+  , sentenceOrd :: Maybe Int32
+  , description :: Text
+  , fingerprint :: Text
+  }
+  deriving (Eq, Show)
+
+data IdentityState = IdentityState
+  { dialogueByFingerprint :: Mp.Map Text [UUID]
+  , visualByFingerprint :: Mp.Map Text [UUID]
+  , freshDialogueEids :: [UUID]
+  , freshVisualEids :: [UUID]
+  }
+  deriving (Eq, Show)
+
+buildInsertPlan
+  :: Narration
+  -> Vc.Vector (Text, UUID, Int32)
+  -> Vc.Vector (Text, UUID, Int32, Maybe Int32)
+  -> [UUID]
+  -> [UUID]
+  -> Either Text InsertPlan
+buildInsertPlan narration dialogueRows visualRows freshDialogueEids freshVisualEids = do
+  let initialState =
+        IdentityState
+          { dialogueByFingerprint =
+              mkIdentityMap
+                [ (fp, eid)
+                | (fp, eid, _oldOrd) <- Vc.toList dialogueRows
+                ]
+          , visualByFingerprint =
+              mkIdentityMap
+                [ (fp, eid)
+                | (fp, eid, _oldOrd, _oldSentenceOrd) <- Vc.toList visualRows
+                ]
+          , freshDialogueEids = freshDialogueEids
+          , freshVisualEids = freshVisualEids
+          }
+
+  (finalState, dialogueInserts) <-
+    foldM
+      buildDialogueInsert
+      (initialState, [])
+      (withOrd32 narration.dialogues)
+
+  pure InsertPlan
+    { dialogues = dialogueInserts
+    }
+
+mkIdentityMap :: [(Text, UUID)] -> Mp.Map Text [UUID]
+mkIdentityMap pairs =
+  Mp.fromListWith
+    (<>)
+    [ (fp, [eid])
+    | (fp, eid) <- pairs
+    ]
+
+buildDialogueInsert
+  :: (IdentityState, [DialogueInsert])
+  -> (Int32, Dialogue)
+  -> Either Text (IdentityState, [DialogueInsert])
+buildDialogueInsert (st0, acc) (dialogueOrd, dialogue) = do
+  let fp = dialogueFingerprint dialogue
+
+  (dialogueEid, st1) <- takeDialogueEid fp st0
+
+  (st2, visualInserts) <-
+    foldM
+      buildVisualInsert
+      (st1, [])
+      (withOrd32 dialogue.visuals)
+
+  let dialogueInsert =
+        DialogueInsert
+          { eid = dialogueEid
+          , ord = dialogueOrd
+          , emotion = renderEmotions dialogue.emotions
+          , fingerprint = fp
+          , sentences =
+              [ (sentenceOrd, sentence)
+              | (sentenceOrd, sentence) <- withOrd32 dialogue.sentences
+              ]
+          , visuals = visualInserts
+          }
+
+  pure (st2, acc <> [dialogueInsert])
+
+buildVisualInsert
+  :: (IdentityState, [VisualInsert])
+  -> (Int32, DialogueVisual)
+  -> Either Text (IdentityState, [VisualInsert])
+buildVisualInsert (st0, acc) (visualOrd, visual) = do
+  let fp = visualFingerprint visual
+
+  (visualEid, st1) <- takeVisualEid fp st0
+
+  let visualInsert =
+        VisualInsert
+          { eid = visualEid
+          , ord = visualOrd
+          , sentenceOrd = visual.sentenceOrd
+          , description = visual.description
+          , fingerprint = fp
+          }
+
+  pure (st1, acc <> [visualInsert])
+
+takeDialogueEid :: Text -> IdentityState -> Either Text (UUID, IdentityState)
+takeDialogueEid fp st =
+  case takeExisting fp st.dialogueByFingerprint of
+    Just (eid, remaining) ->
+      Right
+        ( eid
+        , st { dialogueByFingerprint = remaining }
+        )
+    Nothing ->
+      case st.freshDialogueEids of
+        [] ->
+          Left "Internal error: not enough fresh dialogue UUIDs were generated."
+        eid : rest ->
+          Right
+            ( eid
+            , st { freshDialogueEids = rest }
+            )
+
+takeVisualEid :: Text -> IdentityState -> Either Text (UUID, IdentityState)
+takeVisualEid fp st =
+  case takeExisting fp st.visualByFingerprint of
+    Just (eid, remaining) ->
+      Right
+        ( eid
+        , st { visualByFingerprint = remaining }
+        )
+    Nothing ->
+      case st.freshVisualEids of
+        [] ->
+          Left "Internal error: not enough fresh visual UUIDs were generated."
+        eid : rest ->
+          Right
+            ( eid
+            , st { freshVisualEids = rest }
+            )
+
+takeExisting :: Text -> Mp.Map Text [UUID] -> Maybe (UUID, Mp.Map Text [UUID])
+takeExisting fp mp =
+  case Mp.lookup fp mp of
+    Nothing ->
+      Nothing
+    Just [] ->
+      Nothing
+    Just (eid : rest) ->
+      let mp' =
+            if null rest
+              then Mp.delete fp mp
+              else Mp.insert fp rest mp
+      in
+        Just (eid, mp')
+
+insertDialogueTx
+  :: Int64
+  -> IngestReport
+  -> DialogueInsert
+  -> HT.Transaction IngestReport
+insertDialogueTx narrationUid report dialogue = do
+  dialogueUid <-
+    HT.statement
+      ( dialogue.eid
+      , narrationUid
+      , dialogue.ord
+      , dialogue.emotion
+      , dialogue.fingerprint
+      )
+      Is.insertDialogueStmt
+
+  forM_ dialogue.sentences $ \(sentenceOrd, body) ->
+    void $
+      HT.statement
+        (dialogueUid, sentenceOrd, body)
+        Is.insertDialogueSentenceStmt
+
+  forM_ dialogue.visuals $ \visual ->
+    void $
+      HT.statement
+        ( visual.eid
+        , dialogueUid
+        , visual.ord
+        , visual.sentenceOrd
+        , visual.description
+        , visual.fingerprint
+        )
+        Is.insertDialogueVisualStmt
+
+  pure
+    IngestReport
+      { dialoguesCount = report.dialoguesCount + 1
       , sentencesCount = report.sentencesCount + length dialogue.sentences
       , visualsCount = report.visualsCount + length dialogue.visuals
       }
 
+--------------------------------------------------------------------------------
+-- Fingerprints
+--
+-- These deliberately ignore uid and ord so content identity survives row
+-- replacement and reordering.
 
-summarizeNarration :: Narration -> IngestReport
-summarizeNarration narration =
-  foldl accumDialogue emptyReport narration.dialogues
+dialogueFingerprint :: Dialogue -> Text
+dialogueFingerprint dialogue =
+  canonicalFingerprint
+    [ "dialogue"
+    , T.intercalate "\x1e" (map normalizeForFingerprint dialogue.emotions)
+    , T.intercalate "\x1e" (map normalizeForFingerprint dialogue.sentences)
+    ]
+
+visualFingerprint :: DialogueVisual -> Text
+visualFingerprint visual =
+  canonicalFingerprint
+    [ "visual"
+    , maybe "" tshow visual.sentenceOrd
+    , normalizeForFingerprint visual.description
+    ]
+
+canonicalFingerprint :: [Text] -> Text
+canonicalFingerprint =
+  T.intercalate "\x1f" . map escapeFingerprintPart
+
+escapeFingerprintPart :: Text -> Text
+escapeFingerprintPart =
+  T.concatMap escapeChar
   where
-  accumDialogue :: IngestReport -> Dialogue -> IngestReport
-  accumDialogue acc dialogue = IngestReport {
-      dialoguesCount = acc.dialoguesCount + 1
-    , sentencesCount = acc.sentencesCount + length dialogue.sentences
-    , visualsCount = acc.visualsCount + length dialogue.visuals
-    }
+    escapeChar '\x1f' = "\\x1f"
+    escapeChar '\x1e' = "\\x1e"
+    escapeChar '\\' = "\\\\"
+    escapeChar c = T.singleton c
 
+normalizeForFingerprint :: Text -> Text
+normalizeForFingerprint =
+  T.toLower . T.unwords . T.words
+
+renderEmotions :: [Text] -> Text
+renderEmotions emotions =
+  T.intercalate ", " (map (T.unwords . T.words) emotions)
+
+--------------------------------------------------------------------------------
+-- File loading / parsing
 
 readUtf8TextFile :: FilePath -> IO Text
 readUtf8TextFile path = do
   bytes <- BS.readFile path
   case TE.decodeUtf8' bytes of
-    Left err -> throwIO . userError $
+    Left err ->
+      throwIO . userError $
         "Could not decode input file as UTF-8: " <> show err
-    Right txt -> pure (dropBom txt)
-
+    Right txt ->
+      pure (dropBom txt)
 
 dropBom :: Text -> Text
-dropBom txt = fromMaybe txt $ T.stripPrefix "\xfeff" txt
-
+dropBom txt =
+  fromMaybe txt $
+    T.stripPrefix "\xfeff" txt
 
 parseNarration :: FilePath -> Text -> Either String Narration
 parseNarration inputPath sourceText =
-  first errorBundlePretty $ runParser narrationP inputPath sourceText
-
-{-
-type NarrationParser = Parsec Void Text
-
-
-narrationP :: NarrationParser Narration
-narrationP = do
-  skipBlankLines
-  blocks <- some dialogueBlockP
-  skipBlankLines
-  eof
-  pure $ Narration blocks
-
-
-dialogueBlockP :: NarrationParser DialogueBlock
-dialogueBlockP = do
-  dialogueHeaderP
-  skipBlankLines
-  rawItems <- manyTill rawLineP endOfDialogueP
-  skipBlankLines
-  either fail pure $ rawItemsToDialogue (catMaybes rawItems)
-
-
-rawLineP :: NarrationParser (Maybe RawItem)
-rawLineP =
-    Nothing <$ try blankLineP
-  <|> Just <$> try visualIndexedLineP
-  <|> Just <$> try visualLineP
-  <|> Just . RawContent <$> contentLineP
-
-
-dialogueHeaderP :: NarrationParser ()
-dialogueHeaderP = do
-  hspace
-  void $ string "[dialogue]"
-  hspace
-  lineEndP
-
-
-visualLineP :: NarrationParser RawItem
-visualLineP = do
-  hspace
-  void $ string "[visuals:"
-  hspace
-  desc <- restOfVisualLineP
-  -- void $ char ']'
-  let
-    desc' = normalizeInline desc
-  when (T.null desc') $
-    fail "Empty [visuals:] description."
-  pure $ RawVisual DialogueVisual {
-      sentenceOrd = Nothing
-    , description = desc'
-    }
-
-
-visualIndexedLineP :: NarrationParser RawItem
-visualIndexedLineP = do
-  hspace
-  void $ string "[visuals("
-  digits <- takeWhile1P (Just "visual sentence index") isAsciiDigit
-  void $ string "):"
-  hspace
-  desc <- restOfVisualLineP
-  -- void $ char ']'
-  let
-    desc' = normalizeInline desc
-  when (T.null desc') $
-    fail "Empty indexed visual description."
-  pure $ RawVisual DialogueVisual {
-      sentenceOrd = Just (read (T.unpack digits))
-    , description = desc'
-    }
-
-
-contentLineP :: NarrationParser Text
-contentLineP = do
-  txt <- restOfLineP
-  let
-    stripped = T.strip txt
-  when (T.isPrefixOf "[visuals" stripped) $ fail "Malformed visuals annotation."
-  when (stripped == "[dialogue]") $ fail "Unexpected [dialogue] marker inside dialogue body."
-  pure stripped
-
-
-endOfDialogueP :: NarrationParser ()
-endOfDialogueP = lookAhead $ skipBlankLines *> (void dialogueHeaderP <|> eof)
-
-
-blankLineP :: NarrationParser ()
-blankLineP = do
-  hspace
-  void eol
-
-
-skipBlankLines :: NarrationParser ()
-skipBlankLines = void $ many blankLineP
-
-
-lineEndP :: NarrationParser ()
-lineEndP = void eol <|> eof
-
-
-restOfLineP :: NarrationParser Text
-restOfLineP =
-  takeWhileP (Just "line content") (\c -> c /= '\n' && c /= '\r') <* lineEndP
-
-restOfVisualLineP :: NarrationParser Text
-restOfVisualLineP =
-  takeWhileP (Just "visual line content") (\c -> c /= '\n' && c /= '\r') <* lineEndP
-
-
-rawItemsToDialogue :: [RawItem] -> Either String DialogueBlock
-rawItemsToDialogue items = do
-  let
-    contentLines = [ line | RawContent line <- items, not (T.null (T.strip line)) ]
-    visuals = [ visual | RawVisual visual <- items ]
-
-  firstLine <- case contentLines of
-      [] -> Left "@[rawItemsToDialogue] Dialogue block has no spoken content."
-      line : _ -> Right line
-
-  (emotionText, firstSentence) <- parseEmotionLine firstLine
-
-  let
-    otherSentences = concatMap splitContentLine (drop 1 contentLines)
-    sentenceList = filter (not . T.null) $ map normalizeInline (firstSentence : otherSentences)
-
-  when (null sentenceList) $ Left "@[rawItemsToDialogue] Dialogue block has no usable sentences."
-
-  forM_ visuals $ \visual ->
-    case visual.sentenceOrd of
-      Nothing ->
-        pure ()
-      Just idx ->
-        when (idx < 1 || idx > fromIntegral (length sentenceList)) $
-          Left $ "@[rawItemsToDialogue] Visual index " <> show idx <> " is out of range for dialogue with "
-                  <> show (length sentenceList) <> " sentences."
-
-  pure $
-    DialogueBlock
-      { emotion = normalizeInline emotionText
-      , sentences = sentenceList
-      , visuals = visuals
-      }
-
-parseEmotionLine :: Text -> Either String (Text, Text)
-parseEmotionLine line =
   first errorBundlePretty $
-    runParser emotionLineP "<dialogue-first-line>" line
-
-emotionLineP :: NarrationParser (Text, Text)
-emotionLineP = do
-  hspace
-  void $ char '['
-  emotionText <- takeWhile1P (Just "emotion annotation") (\c -> c /= ']' && c /= '\n' && c /= '\r')
-  void $ char ']'
-  hspace1
-  sentenceText <- takeWhileP (Just "first sentence") (\c -> c /= '\n' && c /= '\r')
-  eof
-
-  let sentenceText' = normalizeInline sentenceText
-  when (T.null sentenceText') $
-    fail "@[parseEmotionLine] The emotion-prefixed first sentence is empty."
-
-  pure (emotionText, sentenceText')
-
--- Current deterministic rule:
--- every non-empty spoken line after the first emotion-prefixed line becomes one
--- sentence. If you later want prose-wrapped paragraphs, replace this function
--- with a sentence splitter.
-splitContentLine :: Text -> [Text]
-splitContentLine line =
-  let
-    line' = normalizeInline line
-  in
-  if T.null line' then [] else [line']
-
-normalizeInline :: Text -> Text
-normalizeInline =
-  T.unwords . T.words
-
-isAsciiDigit :: Char -> Bool
-isAsciiDigit = isDigit
-
--}
-
-tshow :: Show a => a -> Text
-tshow = T.pack . show
+    runParser (narrationP <* eof) inputPath sourceText
 
 --------------------------------------------------------------------------------
--- SQL statements
---
--- Assumed schema:
---
---   pitcher.narration(
---     uid bigint primary key generated always as identity,
---     slug text unique not null,
---     title text not null,
---     language text not null,
---     speaker text null
---   )
---
---   pitcher.dialogue(
---     uid bigint primary key generated always as identity,
---     narration_fk bigint not null references pitcher.narration(uid),
---     ord int not null,
---     emotion text not null
---   )
---
---   pitcher.dialogue_sentence(
---     uid bigint primary key generated always as identity,
---     dialogue_fk bigint not null references pitcher.dialogue(uid),
---     ord int not null,
---     body text not null
---   )
---
---   pitcher.dialogue_visual(
---     uid bigint primary key generated always as identity,
---     dialogue_fk bigint not null references pitcher.dialogue(uid),
---     sentence_ord int null,
---     body text not null
---   )
+-- DB session helper
 
-upsertKeynoteStmt :: Statement (Text, Text, Text, Maybe Text) Int64
-upsertKeynoteStmt =
-  [TH.singletonStatement|
-    insert into prod.narration
-      (slug, title, language, speaker)
-    values
-      ($1::text, $2::text, $3::text, $4::text?)
-    on conflict (slug) do update
-      set title = excluded.title,
-          language = excluded.language,
-          speaker = excluded.speaker
-    returning uid :: int8
-  |]
+runPoolSession :: Pool -> Session a -> IO a
+runPoolSession pool session = do
+  result <- Pool.use pool session
+  case result of
+    Left err ->
+      throwIO . userError $
+        "Database session failed: " <> show err
+    Right value ->
+      pure value
 
-deleteDialogueTreeStmt :: Statement Int64 ()
-deleteDialogueTreeStmt =
-  [TH.resultlessStatement|
-    with target as (
-      select uid
-      from prod.dialogue
-      where narration_fk = $1::int8
-    ),
-    del_visual as (
-      delete from prod.dialogue_visual
-      where dialogue_fk in (select uid from target)
-    ),
-    del_sentence as (
-      delete from prod.dialogue_sentence
-      where dialogue_fk in (select uid from target)
-    )
-    delete from prod.dialogue
-    where uid in (select uid from target)
-  |]
+--------------------------------------------------------------------------------
+-- Small helpers
 
-insertDialogueStmt :: Statement (Int64, Int32, Maybe Text) Int64
-insertDialogueStmt =
-  [TH.singletonStatement|
-    insert into prod.dialogue
-      (narration_fk, ord, emotion)
-    values
-      ($1::int8, $2::int4, $3::text?)
-    returning uid :: int8
-  |]
+withOrd32 :: [a] -> [(Int32, a)]
+withOrd32 =
+  zip [1..]
 
-insertDialogueSentenceStmt :: Statement (Int64, Int32, Text) Int64
-insertDialogueSentenceStmt =
-  [TH.singletonStatement|
-    insert into prod.dialogue_sentence
-      (dialogue_fk, ord, body)
-    values
-      ($1::int8, $2::int4, $3::text)
-    returning uid :: int8
-  |]
+nonBlankMaybe :: Text -> Maybe Text
+nonBlankMaybe txt =
+  let txt' = T.strip txt
+  in
+    if T.null txt'
+      then Nothing
+      else Just txt'
 
-insertDialogueVisualStmt :: Statement (Int64, Int32,  Int32, Text) Int64
-insertDialogueVisualStmt =
-  [TH.singletonStatement|
-    insert into prod.dialogue_visual
-      (dialogue_fk, ord, sentence_ord, body)
-    values
-      ($1::int8, $2::int4, $3::int4, $4::text)
-    returning uid :: int8
-  |]
-
+tshow :: Show a => a -> Text
+tshow =
+  T.pack . show

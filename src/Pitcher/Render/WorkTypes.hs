@@ -4,23 +4,25 @@ module Pitcher.Render.WorkTypes where
 
 import Data.Int (Int32, Int64)
 import Data.Text (Text)
+import qualified Data.Text as T
 import Data.UUID (UUID)
+import qualified Data.UUID as Uu
 import Data.Time.Clock (UTCTime)
 
 import qualified Data.Aeson as Ae
 import GHC.Generics (Generic)
 
 import Utils (sanitizeKey)
+import Data.Char (isAsciiLower, isAsciiUpper, isDigit)
 
 
 data WorkerCaps = WorkerCaps
   { owner :: Text
   , lane :: Text
-  , hasGpu :: Bool
-  , vramMb :: Maybe Int32
+  , execFilter :: Maybe Text
   , leaseSeconds :: Int32
   }
-  deriving (Eq, Show)
+
 
 data ExecRequirements = ExecRequirements
   { lane :: Text
@@ -32,23 +34,37 @@ data ExecRequirements = ExecRequirements
   deriving (Eq, Show, Generic, Ae.FromJSON, Ae.ToJSON)
 
 data LeasedNode = LeasedNode
-  { jobUid :: Int64
-  , graphUid :: Int64
+  { renderJobUid :: Int64
+  , narrationUid :: Int64
   , nodeUid :: Int64
-  , key :: Text
-  , stage :: Text
+  , deriveKey :: Text
+  , lane :: Text
   , exec :: Text
   , ord :: Int32
-  , dialogueFk :: Maybe Int64
-  , visualOrd :: Maybe Int32
-  , artifactKind :: Maybe Text
-  , sourceSig :: Text
-  , requirements :: ExecRequirements
-  , payload :: Ae.Value
+  , sourceKind :: Maybe Text
+  , sourceEid :: Maybe UUID
+  , params :: Ae.Value
+  , artifactKind :: Text
   , attemptCount :: Int32
   , maxAttempts :: Int32
   , leaseOwner :: Text
   , leaseExpiresAt :: UTCTime
+  }
+  deriving (Eq, Show)
+
+data RenderInput = RenderInput
+  { ord :: Int32
+  , inputKind :: Text
+  , refKind :: Text
+  , refEid :: Maybe UUID
+  , refDeriveKey :: Maybe Text
+  , role :: Maybe Text
+  }
+
+data UpstreamAsset = UpstreamAsset
+  { assetUid :: Int64
+  , assetEid :: UUID
+  , artifactKind :: Text
   }
   deriving (Eq, Show)
 
@@ -74,4 +90,20 @@ data CompleteFailure = CompleteFailure
 
 
 assetNameForNode :: LeasedNode -> Text -> Text
-assetNameForNode node ext = sanitizeKey node.key <> "." <> ext
+assetNameForNode node ext =
+  sanitizeAssetName node.exec
+    <> "-"
+    <> sanitizeAssetName node.deriveKey
+    <> "."
+    <> ext
+
+sanitizeAssetName :: Text -> Text
+sanitizeAssetName =
+  T.map repl
+  where
+    repl c
+      | isAsciiLower c = c
+      | isAsciiUpper c = c
+      | isDigit c = c
+      | otherwise = '_'
+

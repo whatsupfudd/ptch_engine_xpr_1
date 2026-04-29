@@ -47,9 +47,7 @@ import DB.Helpers (runSessionOrThrow)
 
 data LeaseRecycleMode
   = NoLeaseRecycle
-  | RecycleExpiredGlobally
-      { everyIdlePolls :: Int
-      }
+  | RecycleExpiredGlobally { everyIdlePolls :: Int }
   deriving (Eq, Show)
 
 data WorkerLoopCfg = WorkerLoopCfg
@@ -139,11 +137,11 @@ runWorkerLoopUntil env caps cfg shouldStop =
             let
               node = nodeAny
               stats1 = stats { leasesTaken = stats.leasesTaken + 1 }
-            cfg.logMsg $ "worker[" <> caps.owner <> "] leased node " <> node.key <> " exec=" <> node.exec
+            cfg.logMsg $ "worker[" <> caps.owner <> "] leased node " <> (T.pack . show) node.nodeUid <> " exec=" <> node.exec
             runRes <- try $ runLeasedNodeToCompletion env caps node :: IO (Either SomeException Bool)
             case runRes of
               Left ex -> do
-                cfg.logMsg $ "worker[" <> caps.owner <> "] runner exception on " <> node.key <> ": " <> T.pack (show ex)
+                cfg.logMsg $ "worker[" <> caps.owner <> "] runner exception on " <> (T.pack . show) node.nodeUid <> ": " <> T.pack (show ex)
                 threadDelay cfg.failureSleepMicros
                 loopPass 0 0 stats1
               Right ok -> do
@@ -152,7 +150,7 @@ runWorkerLoopUntil env caps cfg shouldStop =
                         stats1 { nodesCompleted = stats1.nodesCompleted + 1 }
                       else
                         stats1 { nodesFailed = stats1.nodesFailed + 1 }
-                cfg.logMsg $ "worker[" <> caps.owner <> "] finished node " <> node.key <> " ok=" <> boolText ok
+                cfg.logMsg $ "worker[" <> caps.owner <> "] finished node " <> (T.pack . show) node.nodeUid <> " ok=" <> boolText ok
                 loopPass 0 0 stats2
 
 --------------------------------------------------------------------------------
@@ -221,7 +219,7 @@ tshow = T.pack . show
 
 recycleExpiredLeasesGlobal :: Pool -> IO Int64
 recycleExpiredLeasesGlobal pool =
-  runSessionOrThrow pool $ statement () recycleExpiredLeasesGlobalStmt
+  runSessionOrThrow "recycleExpiredLeasesGlobalStmt" pool $ statement () recycleExpiredLeasesGlobalStmt
 
 
 recycleExpiredLeasesGlobalStmt :: Statement () Int64

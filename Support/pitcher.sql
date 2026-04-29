@@ -44,23 +44,14 @@ create index if not exists asset_created_at_idx on asset (created_at desc);
 
 create table if not exists prod.narration (
   uid bigint generated always as identity primary key,
-  eid uuid not null default uuid_generate_v4(),
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now(),
-  slug text not null,
-  title text not null,
+  eid uuid not null unique,
+  title text,
   language text not null,
-  speaker text,
-  source_asset_fk bigint references asset(uid) on delete set null,
   notes text,
-
-  constraint pitcher_narration_slug_unq unique (slug),
-  constraint pitcher_narration_eid_unq unique (eid)
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
 );
 
-create index if not exists pitcher_narration_language_idx on prod.narration (language);
-
-create index if not exists pitcher_narration_updated_at_idx on prod.narration (updated_at desc);
 
 -- -----------------------------------------------------------------------------
 -- Dialogue blocks
@@ -70,16 +61,17 @@ create index if not exists pitcher_narration_updated_at_idx on prod.narration (u
 
 create table if not exists prod.dialogue (
   uid bigint generated always as identity primary key,
-  narration_fk bigint not null references prod.narration(uid) on delete cas
+  eid uuid not null unique,
+  narration_fk bigint not null references prod.narration(uid) on delete cascade,
   ord int not null,
   emotion text not null,
-  notes text,
-
-  constraint pitcher_dialogue_ord_ck check (ord >= 1),
-  constraint pitcher_dialogue_narration_ord_unq unique (narration_fk, ord)
+  fingerprint text not null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (narration_fk, ord)
 );
 
-create index if not exists pitcher_dialogue_narration_idx on prod.dialogue (narration_fk, ord);
+create index if not exists pitcher_dialogue_narration_fingerprint_idx on prod.dialogue (narration_fk, fingerprint);
 
 -- -----------------------------------------------------------------------------
 -- Spoken sentences
@@ -92,13 +84,9 @@ create table if not exists prod.dialogue_sentence (
   dialogue_fk bigint not null references prod.dialogue(uid) on delete cascade,
   ord int not null,
   body text not null,
-
-  constraint pitcher_dialogue_sentence_ord_ck check (ord >= 1),
-  constraint pitcher_dialogue_sentence_body_ck check (length(trim(body)) > 0),
-  constraint pitcher_dialogue_sentence_dialogue_ord_unq unique (dialogue_fk, ord)
+  unique (dialogue_fk, ord)
 );
 
-create index if not exists pitcher_dialogue_sentence_dialogue_idx on prod.dialogue_sentence (dialogue_fk, ord);
 
 -- -----------------------------------------------------------------------------
 -- Visual prompts
@@ -110,25 +98,25 @@ create index if not exists pitcher_dialogue_sentence_dialogue_idx on prod.dialog
 
 create table if not exists prod.dialogue_visual (
   uid bigint generated always as identity primary key,
+  eid uuid not null unique,
   dialogue_fk bigint not null references prod.dialogue(uid) on delete cascade,
   ord int not null,
   sentence_ord int,
   body text not null,
+  fingerprint text not null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
 
-  constraint pitcher_dialogue_visual_ord_ck check (ord >= 1),
-  constraint pitcher_dialogue_visual_sentence_ord_ck check (sentence_ord is null or sentence_ord >= 1),\
-  constraint pitcher_dialogue_visual_body_ck check (length(trim(body)) > 0),
-  constraint pitcher_dialogue_visual_dialogue_ord_unq unique (dialogue_fk, ord)
+  constraint prod_render_job_eid_unq unique (eid)
 );
 
-create index if not exists pitcher_dialogue_visual_dialogue_idx on prod.dialogue_visual (dialogue_fk, ord);
-create index if not exists pitcher_dialogue_visual_sentence_idx on prod.dialogue_visual (dialogue_fk, sentence_ord);
-
+create index if not exists pitcher_dialogue_visual_dialogue_fingerprint_idx
+  on prod.dialogue_visual (dialogue_fk, fingerprint);
+  
 -- -----------------------------------------------------------------------------
 -- Render job
 --
 -- One durable orchestration record per narration rendering run.
--- state stores serialized stage/task state for resumability.
 -- final_asset_fk points to the final mp4 when complete.
 -- -----------------------------------------------------------------------------
 
@@ -136,65 +124,212 @@ create table if not exists prod.render_job (
   uid bigint generated always as identity primary key,
   eid uuid not null default uuid_generate_v4(),
   narration_fk bigint not null references prod.narration(uid) on delete cascade,
+  status text not null,
+  supersedes_job_fk bigint references prod.render_job(uid) on delete set null,
+  final_asset_fk bigint references asset(uid) on delete set null,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
-  status text not null,
-  state jsonb not null default '{}'::jsonb,
-  final_asset_fk bigint references asset(uid) on delete set null,
-  notes text,
-
-  constraint pitcher_render_job_eid_unq unique (eid)
+  completed_at timestamptz
 );
 
-create index if not exists pitcher_render_job_narration_idx on prod.render_job (narration_fk, created_at desc);
-create index if not exists pitcher_render_job_status_idx on prod.render_job (status);
-create index if not exists pitcher_render_job_final_asset_idx on prod.render_job (final_asset_fk);
-create index if not exists pitcher_render_job_state_gin_idx on prod.render_job using gin (state);
+create index if not exists pitcher_render_job_narration_idx
+  on prod.render_job (narration_fk, created_at desc);
+
 
 -- -----------------------------------------------------------------------------
 -- Per-stage artifact tracking
 --
 -- Records reusable outputs for audio, image, segment and final stages.
--- source_sig is the deterministic content signature used to decide reuse.
 -- -----------------------------------------------------------------------------
 
 create table if not exists prod.render_artifact (
   uid bigint generated always as identity primary key,
-  render_job_fk bigint not null references prod.render_job(uid) on delete cascade,
+  narration_fk bigint not null references prod.narration(uid) on delete cascade,
 
-  kind text not null,                     -- audio, image, segment, final
-  dialogue_fk bigint references prod.dialogue(uid) on delete cascade,
-  visual_ord int,
-  source_sig text not null,
-  status text not null,                   -- pending, running, done, failed, skipped
+  derive_key text not null,
+  lane text not null check (lane in ('generate', 'fuse', 'finalize')),
+  exec text not null,
+  artifact_kind text not null,
+
   asset_fk bigint references asset(uid) on delete set null,
   asset_eid uuid,
+  status text not null check (status in ('done', 'failed')),
   request_eid uuid,
   notes text,
+
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
 
-  constraint pitcher_render_artifact_kind_ck check (kind in ('audio', 'image', 'segment', 'final')),
-  constraint pitcher_render_artifact_status_ck check (status in ('pending', 'queued', 'running', 'done', 'failed', 'skipped')),
-  constraint pitcher_render_artifact_scope_ck check (
-      (kind = 'final'   and dialogue_fk is null and visual_ord is null) or
-      (kind = 'segment' and dialogue_fk is not null and visual_ord is null) or
-      (kind = 'audio'   and dialogue_fk is not null and visual_ord is null) or
-      (kind = 'image'   and dialogue_fk is not null and visual_ord is not null)
-    )
+  unique (narration_fk, derive_key)
 );
 
-create index if not exists pitcher_render_artifact_job_idx on prod.render_artifact (render_job_fk, kind, updated_at desc);
-create index if not exists pitcher_render_artifact_dialogue_idx on prod.render_artifact (dialogue_fk, kind);
-create index if not exists pitcher_render_artifact_source_sig_idx on prod.render_artifact (source_sig);
-create index if not exists pitcher_render_artifact_asset_idx on prod.render_artifact (asset_fk);
-create index if not exists pitcher_render_artifact_asset_eid_idx on prod.render_artifact (asset_eid);
-create index if not exists pitcher_render_artifact_request_eid_idx on prod.render_artifact (request_eid);
-create unique index if not exists pitcher_render_artifact_reuse_idx on prod.render_artifact (render_job_fk, kind, dialogue_fk, visual_ord, source_sig);
+create index if not exists pitcher_render_artifact_narration_idx
+  on prod.render_artifact (narration_fk, derive_key);
 
--- -----------------------------------------------------------------------------
--- Optional trigger helper for updated_at maintenance
--- -----------------------------------------------------------------------------
+
+create table if not exists prod.render_node (
+  uid bigint generated always as identity primary key,
+  render_job_fk bigint not null references prod.render_job(uid) on delete cascade,
+
+  derive_key text not null,
+  lane text not null check (lane in ('generate', 'fuse', 'finalize')),
+  exec text not null,
+  ord int not null,
+
+  source_kind text check (source_kind in ('narration', 'dialogue', 'visual')),
+  source_eid uuid,
+
+  params jsonb not null default '{}'::jsonb,
+  artifact_kind text not null,
+
+  status text not null check (status in ('pending', 'ready', 'leased', 'running', 'done', 'failed', 'skipped')),
+  max_attempts int not null,
+  attempt_count int not null default 0,
+
+  lease_owner text,
+  lease_expires_at timestamptz,
+
+  asset_fk bigint references asset(uid) on delete set null,
+  asset_eid uuid,
+  completed_at timestamptz,
+  error_text text,
+
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+
+  unique (render_job_fk, derive_key)
+);
+
+create index if not exists pitcher_render_node_job_status_idx
+  on prod.render_node (render_job_fk, status, ord);
+
+create index if not exists pitcher_render_node_source_eid_idx
+  on prod.render_node (source_eid);
+
+
+-- New:
+create table if not exists prod.render_input (
+  uid bigint generated always as identity primary key,
+
+  node_fk bigint not null
+    references prod.render_node(uid)
+    on delete cascade,
+
+  ord int not null,
+
+  input_kind text not null
+    check (input_kind in ('source', 'node')),
+
+  ref_kind text not null
+    check (ref_kind in ('narration', 'dialogue', 'visual', 'render_node')),
+
+  ref_eid uuid,
+  ref_derive_key text,
+
+  role text,
+
+  constraint pitcher_render_input_ref_shape_ck
+    check (
+      (
+        input_kind = 'source'
+        and ref_kind in ('narration', 'dialogue', 'visual')
+        and ref_eid is not null
+        and ref_derive_key is null
+      )
+      or
+      (
+        input_kind = 'node'
+        and ref_kind = 'render_node'
+        and ref_eid is null
+        and ref_derive_key is not null
+      )
+    ),
+
+  constraint pitcher_render_input_node_ord_unq
+    unique (node_fk, ord)
+);
+
+create index if not exists pitcher_render_input_node_idx
+  on prod.render_input (node_fk, ord);
+
+create index if not exists pitcher_render_input_ref_eid_idx
+  on prod.render_input (ref_kind, ref_eid);
+
+create index if not exists pitcher_render_input_ref_derive_key_idx
+  on prod.render_input (ref_derive_key);
+
+
+create or replace function prod.sourceinputsstillexist(p_node_fk bigint)
+returns boolean
+language sql
+stable
+as $$
+  select not exists (
+    select 1
+    from prod.render_input ri
+    where ri.node_fk = p_node_fk
+      and ri.input_kind = 'source'
+      and (
+        (
+          ri.ref_kind = 'narration'
+          and not exists (
+            select 1
+            from prod.narration n
+            where n.eid = ri.ref_eid
+          )
+        )
+        or
+        (
+          ri.ref_kind = 'dialogue'
+          and not exists (
+            select 1
+            from prod.dialogue d
+            where d.eid = ri.ref_eid
+          )
+        )
+        or
+        (
+          ri.ref_kind = 'visual'
+          and not exists (
+            select 1
+            from prod.dialogue_visual v
+            where v.eid = ri.ref_eid
+          )
+        )
+        or
+        (
+          ri.ref_kind not in ('narration', 'dialogue', 'visual')
+        )
+        or
+        (
+          ri.ref_eid is null
+        )
+      )
+  );
+$$;
+
+
+
+-- Old:
+
+create table prod.render_graph (
+  uid bigint generated always as identity primary key,
+  render_job_fk bigint not null references prod.render_job(uid) on delete cascade,
+  schema_ver int not null,
+  status text not null default 'open',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (render_job_fk)
+);
+
+create table prod.render_edge (
+  uid bigint generated always as identity primary key,
+  graph_fk bigint not null references prod.render_graph(uid) on delete cascade,
+  from_node_fk bigint not null references prod.render_node(uid) on delete cascade,
+  to_node_fk bigint not null references prod.render_node(uid) on delete cascade,
+  unique (graph_fk, from_node_fk, to_node_fk)
+);
+
 
 create or replace function prod.touch_updated_at()
 returns trigger
@@ -227,48 +362,3 @@ before update on prod.render_artifact
 for each row
 execute function prod.touch_updated_at();
 
-
-create table prod.render_graph (
-  uid bigint generated always as identity primary key,
-  render_job_fk bigint not null references prod.render_job(uid) on delete cascade,
-  schema_ver int not null,
-  status text not null default 'open',
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now(),
-  unique (render_job_fk)
-);
-
-create table prod.render_node (
-  uid bigint generated always as identity primary key,
-  graph_fk bigint not null references prod.render_graph(uid) on delete cascade,
-  key text not null,
-  stage text not null,
-  exec text not null,
-  ord int not null,
-  dialogue_fk bigint null references prod.dialogue(uid) on delete cascade,
-  visual_ord int null,
-  artifact_kind text null,
-  source_sig text not null,
-  requirements jsonb not null,
-  payload jsonb not null,
-  status text not null default 'pending',
-  max_attempts int not null,
-  attempt_count int not null default 0,
-  lease_owner text null,
-  lease_expires_at timestamptz null,
-  asset_fk bigint null references asset(uid) on delete set null,
-  asset_eid uuid null,
-  completed_at timestamptz null,
-  error_text text null,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now(),
-  unique (graph_fk, key)
-);
-
-create table prod.render_edge (
-  uid bigint generated always as identity primary key,
-  graph_fk bigint not null references prod.render_graph(uid) on delete cascade,
-  from_node_fk bigint not null references prod.render_node(uid) on delete cascade,
-  to_node_fk bigint not null references prod.render_node(uid) on delete cascade,
-  unique (graph_fk, from_node_fk, to_node_fk)
-);

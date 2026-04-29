@@ -7,14 +7,14 @@ import Hasql.Session (Session)
 import Hasql.Transaction (Transaction)
 import qualified Hasql.Transaction.Sessions as HTS
 
-runSessionOrThrow :: Pool -> Session a -> IO a
-runSessionOrThrow pool sess = do
+runSessionOrThrow :: String -> Pool -> Session a -> IO a
+runSessionOrThrow label pool sess = do
   res <- use pool sess
   case res of
-    Left err -> throwIO . userError $ "DB session failed: " <> show err
+    Left err -> throwIO . userError $ "@[" <> label <> "] DB session failed: " <> show err
     Right val -> pure val
 
 
-runTx :: Pool -> Transaction a -> IO a
-runTx pool tx =
-  runSessionOrThrow pool $ HTS.transaction HTS.Serializable HTS.Write tx
+runTx :: String -> Pool -> Transaction a -> IO a
+runTx label pool tx =
+  runSessionOrThrow label pool $ HTS.transaction HTS.Serializable HTS.Write tx

@@ -5,6 +5,7 @@ module Pitcher.Render.GraphTypes where
 
 import Data.Int (Int32, Int64)
 import Data.Text (Text)
+import Data.UUID (UUID)
 
 import GHC.Generics (Generic)
 
@@ -12,21 +13,6 @@ import qualified Data.Aeson as Ae
 
 import Pitcher.NarrationTypes (DialogueRender (..), VisualRender (..))
 import Utils (tshow)
-
-data RenderGraph = RenderGraph
-  { schemaVer :: Int32
-  , narrationUid :: Int64
-  , nodes :: [RenderNodeSpec]
-  , edges :: [RenderEdgeSpec]
-  }
-  deriving (Eq, Generic)
-
-instance Show RenderGraph where
-  show graph = "RenderGraph { schemaVer = " <> show graph.schemaVer 
-        <> "\n, narrationUid = " <> show graph.narrationUid
-        <> "\n, nodes = " <> show graph.nodes
-        <> "\n, edges = " <> show graph.edges <> "\n }"
-
 
 data NodeStage =
     AudioStage
@@ -37,13 +23,32 @@ data NodeStage =
   deriving (Eq, Ord, Show, Generic, Ae.ToJSON)
 
 
-data NodeExec =
-    AiTextToSpeechExec
+-- New:
+
+data NodeLane
+  = GenerateLane
+  | FuseLane
+  | FinalizeLane
+  deriving (Eq, Ord, Show)
+
+data NodeExec
+  = AiTextToSpeechExec
   | AiTextToImageExec
   | FfmpegSegmentExec
   | FfmpegConcatExec
   | BlenderExec
-  deriving (Eq, Ord, Show, Generic, Ae.ToJSON)
+  deriving (Eq, Ord, Show)
+
+data SourceKind
+  = NarrationSource
+  | DialogueSource
+  | VisualSource
+  deriving (Eq, Ord, Show)
+
+data InputKind
+  = SourceInput
+  | NodeInput
+  deriving (Eq, Ord, Show)
 
 
 data NodeStatus =
@@ -72,33 +77,39 @@ data ExpectedArtifact = ExpectedArtifact
   }
   deriving (Eq, Show, Generic, Ae.ToJSON)
 
+-- New:
+
+
+data NodeInputSpec = NodeInputSpec
+  { ord :: Int32
+  , inputKind :: InputKind
+  , refKind :: Text
+  , refEid :: UUID
+  , role :: Maybe Text
+  }
+  deriving (Eq, Show)
+
+
 data RenderNodeSpec = RenderNodeSpec
-  { key :: Text
-  , stage :: NodeStage
+  { deriveKey :: Text
+  , lane :: NodeLane
   , exec :: NodeExec
   , ord :: Int32
-  , dialogueFk :: Maybe Int64
-  , visualOrd :: Maybe Int32
-  , sourceSig :: Text
-  , payload :: Ae.Value
-  , requirements :: ExecRequirements
-  , outputs :: [ExpectedArtifact]
+  , sourceKind :: Maybe SourceKind
+  , sourceEid :: Maybe UUID
+  , params :: Ae.Value
+  , artifactKind :: Text
+  , inputs :: [NodeInputSpec]
   , maxAttempts :: Int32
   }
-  deriving (Eq, Generic, Ae.ToJSON)
+  deriving (Eq, Show)
 
-instance Show RenderNodeSpec where
-  show node = "RenderNodeSpec { key = " <> show node.key
-        <> "\n, stage = " <> show node.stage
-        <> "\n, exec = " <> show node.exec
-        <> "\n, ord = " <> show node.ord
-        <> "\n, dialogueFk = " <> show node.dialogueFk
-        <> "\n, visualOrd = " <> show node.visualOrd
-        <> "\n, sourceSig = " <> show node.sourceSig
-        <> "\n, payload = " <> show node.payload
-        <> "\n, requirements = " <> show node.requirements
-        <> "\n, outputs = " <> show node.outputs
-        <> "\n, maxAttempts = " <> show node.maxAttempts <> "\n }"
+
+data RenderGraph = RenderGraph
+  { narrationUid :: Int64
+  , nodes :: [RenderNodeSpec]
+  }
+  deriving (Eq, Show)
 
 
 data RenderEdgeSpec = RenderEdgeSpec
@@ -135,6 +146,16 @@ stageText = \case
   FinalStage -> "final"
   BlenderStage -> "blender"
 
+--------------------------------------------------------------------------------
+-- Text encoders
+
+nodeLaneToText :: NodeLane -> Text
+nodeLaneToText = \case
+  GenerateLane -> "generate"
+  FuseLane -> "fuse"
+  FinalizeLane -> "finalize"
+
+
 nodeExecToText :: NodeExec -> Text
 nodeExecToText = \case
   AiTextToSpeechExec -> "ai_tts"
@@ -142,8 +163,17 @@ nodeExecToText = \case
   FfmpegSegmentExec -> "ffmpeg_segment"
   FfmpegConcatExec -> "ffmpeg_concat"
   BlenderExec -> "blender"
-  _ -> "unknown"
 
+sourceKindToText :: SourceKind -> Text
+sourceKindToText = \case
+  NarrationSource -> "narration"
+  DialogueSource -> "dialogue"
+  VisualSource -> "visual"
+
+inputKindToText :: InputKind -> Text
+inputKindToText = \case
+  SourceInput -> "source"
+  NodeInput -> "node"
 
 textToNodeExec :: Text -> Maybe NodeExec
 textToNodeExec = \case

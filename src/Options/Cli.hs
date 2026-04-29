@@ -134,10 +134,11 @@ commandDefs =
       ("help", pure HelpCmd, "Help about any command.")
       , ("version", pure VersionCmd, "Shows the version number of importer.")
       , ("ingest", IngestCmd <$> ingestOptsP, "Ingests a narration text file into the database.")
-      , ("launch", LaunchCmd <$> launchOptsP, "Launches a render job.")
       , ("publish", PublishCmd <$> publishOptsP, "Publishes a render job to a video site.")
       , ("produce", ProduceCmd <$> produceOptsP, "Produces a render job.")
       , ("work", WorkCmd <$> workOptsP, "Works a render job.")
+      -- Deprecated:
+      -- , ("launch", LaunchCmd <$> launchOptsP, "Launches a render job.")
       ]
     headArray = head cmdArray
     tailArray = tail cmdArray
@@ -189,11 +190,11 @@ launchOptsP =
   
 publishOptsP :: Parser PublishOpts
 publishOptsP =
-  PublishOpts <$> strArgument ( metavar "JOB-UID" <> help "UUID of the job to publish." )
+  PublishOpts <$> strArgument ( metavar "NARRATION-UID" <> help "UUID of the narration to publish." )
 
 produceOptsP :: Parser ProduceOpts
 produceOptsP =
-  ProduceOpts <$> strArgument ( metavar "JOB-UID" <> help "UUID of the job to produce." )
+  ProduceOpts <$> strArgument ( metavar "NARRATION-UID" <> help "UUID of the narration to produce." )
 
 workOptsP :: Parser WorkOpts
 workOptsP =

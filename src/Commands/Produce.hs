@@ -23,12 +23,14 @@ produceCmd opts rtOpts = do
     Just jobEid ->
       let
         params = ProducerCfg {
-          graphSchemaVer = 1
-          , renderVersionTag = "v1"
+            renderVersionTag = "v1"
           , defaultMaxAttempts = 1
-          , defaultLeaseSeconds = 10
           , finalGapSeconds = 0.5
           , finalFadeSeconds = 0.5
+          , ttsVoice = Just "en-US-Standard-A"
+          , imageStyleTag = "v1"
+          , segmentPolicyTag = "v1"
+          , finalPolicyTag = "v1"
         }
       in
       let
@@ -38,6 +40,6 @@ produceCmd opts rtOpts = do
 
 launchJob :: ProducerCfg -> UUID -> Pool -> IO ()
 launchJob cfg jobEid pool = do
-  putStrLn $ "@[launchJob] job " <> show jobEid
+  putStrLn $ "@[launchJob] narration: " <> show jobEid
   graphUid <- Pr.launchProducer cfg pool jobEid
-  putStrLn $ "@[launchJob] graph UID: " <> show graphUid
+  putStrLn $ "@[launchJob] render_job UID: " <> show graphUid
