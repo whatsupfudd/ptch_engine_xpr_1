@@ -338,66 +338,42 @@ runImageNode env node = do
         Just description -> do
           aiClient <- loginAiServer env.ai
 
-          let fullPrompt =
-                env.ai.imagePromptPrefix
-                  <> description
-                  <> env.ai.imagePromptPostfix
+          let
+            fullPrompt = env.ai.imagePromptPrefix <> description <> env.ai.imagePromptPostfix
+            params = Ae.object ["model" .= env.ai.imageModel]
 
-              params =
-                Ae.object ["model" .= env.ai.imageModel]
-
-          invokeRes <-
-            try $
-              invokeForAsset
-                aiClient
-                env.ai.imageFunctionEid
-                params
-                (Ae.toJSON fullPrompt)
-            :: IO (Either SomeException (UUID, UUID))
+          invokeRes <- try $ invokeForAsset aiClient env.ai.imageFunctionEid params (Ae.toJSON fullPrompt)
+                :: IO (Either SomeException (UUID, UUID))
 
           case invokeRes of
-            Left ex ->
-              pure . Left . retryableFailure $
-                "Image invoke failed: " <> T.pack (show ex)
+            Left ex -> pure . Left . retryableFailure $ "Image invoke failed: " <> T.pack (show ex)
 
             Right (reqEid, remoteAssetEid) ->
               withSystemTempDirectory "pitcher-run-image" $ \tmpDir -> do
-                let localPath = tmpDir </> "image.png"
+                let
+                  localPath = tmpDir </> "image.png"
 
                 dlRes <-
-                  try $
-                    downloadRemoteAiAsset aiClient remoteAssetEid localPath
-                  :: IO (Either SomeException ())
+                  try $ downloadRemoteAiAsset aiClient remoteAssetEid localPath :: IO (Either SomeException ())
 
                 case dlRes of
-                  Left ex ->
-                    pure . Left . retryableFailure $
-                      "Image asset download failed: " <> T.pack (show ex)
+                  Left ex -> pure . Left . retryableFailure $ "@[runImageNode] Image asset download failed: " <> T.pack (show ex)
 
                   Right () -> do
-                    upRes <-
-                      try $
-                        As.uploadFileAsAsset
-                          env.pool
-                          env.s3
-                          localPath
-                          (assetNameForNode node "png")
-                          "image/png"
-                          ("image node " <> node.deriveKey)
-                      :: IO (Either SomeException AssetRef)
+                    upRes <- try $ As.uploadFileAsAsset env.pool env.s3 localPath
+                          (assetNameForNode node "png") "image/png" ("image node " <> node.deriveKey)
+                          :: IO (Either SomeException AssetRef)
 
                     case upRes of
-                      Left ex ->
-                        pure . Left . retryableFailure $
-                          "Image asset upload failed: " <> T.pack (show ex)
+                      Left ex -> pure . Left . retryableFailure $ "Image asset upload failed: " <> T.pack (show ex)
 
                       Right assetRef ->
-                        pure . Right $
-                          NodeComputeSuccess
-                            { asset = assetRef
+                        pure . Right $ NodeComputeSuccess { 
+                              asset = assetRef
                             , requestEid = Just reqEid
                             , notes = Just ("remoteAsset=" <> Uu.toText remoteAssetEid)
                             }
+
 
 --------------------------------------------------------------------------------
 -- Segment fusion
@@ -411,115 +387,154 @@ runImageNode env node = do
 runSegmentNode :: TaskRunnerEnv -> LeasedNode -> IO (Either NodeComputeFailure NodeComputeSuccess)
 runSegmentNode env node = do
   inputs <- loadNodeInputs env.pool node.nodeUid
-
   case resolveDialogueEidForSegment node inputs of
-    Left err ->
-      pure . Left $ fatalFailure err
+    Left err -> pure . Left $ fatalFailure err
 
     Right dialogueEid -> do
       case resolveNodeInputKeys inputs "audio" of
-        [] ->
-          pure . Left $
-            fatalFailure ("Segment node has no audio input: " <> node.deriveKey)
+        [] -> pure . Left $ fatalFailure ("Segment node has no audio input: " <> node.deriveKey)
+        [audioKey] -> do
+            mbAudioAsset <- lookupUpstreamAssetRef env node audioKey
+            imageAssetsRes <- mapM (lookupUpstreamAssetRef env node) (resolveNodeInputKeys inputs "image")
+            case (mbAudioAsset, sequence imageAssetsRes) of
+              (Nothing, _) -> pure . Left $
+                  fatalFailure ("Segment node is missing upstream audio asset: " <> audioKey)
+              (_, Nothing) -> pure . Left $
+                  fatalFailure ("Segment node is missing one or more upstream image assets: " <> node.deriveKey)
+              (Just audioAsset, Just imageAssets) ->
+                renderSegmentWithAssets env node dialogueEid audioAsset imageAssets
 
-        audioKey : _ -> do
-          mbAudioAsset <- lookupUpstreamAssetRef env node audioKey
-          imageAssetsRes <- mapM (lookupUpstreamAssetRef env node) (resolveNodeInputKeys inputs "image")
+        manyAudioKeys -> do
+          withSystemTempDirectory "pitcher-audio-concat" $ \tmpDir -> do
+            eiFilePath <- prepareSegmentAudio env node tmpDir manyAudioKeys
+            case eiFilePath of
+              Left err -> pure $ Left err
+              Right concatAudioFile -> do
+                imageAssetsRes <- mapM (lookupUpstreamAssetRef env node) (resolveNodeInputKeys inputs "image")
+                case sequence imageAssetsRes of
+                  Nothing -> pure . Left $ fatalFailure ("Segment node is missing one or more upstream image assets: " <> node.deriveKey)
+                  Just imageAssets ->
+                    renderSegmentWithConcatAudio env node dialogueEid concatAudioFile imageAssets
 
-          case (mbAudioAsset, sequence imageAssetsRes) of
-            (Nothing, _) ->
-              pure . Left $
-                fatalFailure ("Segment node is missing upstream audio asset: " <> audioKey)
 
-            (_, Nothing) ->
-              pure . Left $
-                fatalFailure ("Segment node is missing one or more upstream image assets: " <> node.deriveKey)
+prepareSegmentAudio :: TaskRunnerEnv -> LeasedNode -> FilePath -> [Text] -> IO (Either NodeComputeFailure FilePath)
+prepareSegmentAudio env node tmpDir audioKeys = do
+  assetMaybes <- mapM (lookupUpstreamAssetRef env node) audioKeys
 
-            (Just audioAsset, Just imageAssets) ->
-              renderSegmentWithAssets env node dialogueEid audioAsset imageAssets
+  case sequence assetMaybes of
+    Nothing -> pure . Left $
+        fatalFailure ("Segment node is missing one or more upstream audio assets: " <> node.deriveKey)
+    Just audioAssets -> do
+      audioPaths <- forM (zip [(1 :: Int) ..] audioAssets) $ \(ix, assetRef) ->
+          let
+            path = tmpDir </> ("audio_" <> show ix <> ".mp3")
+          in do
+          Ao.downloadAssetToPath env.s3 assetRef.eid path
+          pure path
+      case audioPaths of
+        [] -> pure . Left $ fatalFailure ("Segment node has no audio inputs: " <> node.deriveKey)
+        [single] -> pure (Right single)
+        manyPaths ->
+          let
+            outPath = tmpDir </> "section_audio.mp3"
+          in do
+          concatAudioFiles env.video.ffmpegBin manyPaths outPath
+          pure (Right outPath)
 
-renderSegmentWithAssets
-  :: TaskRunnerEnv
-  -> LeasedNode
-  -> UUID
-  -> AssetRef
-  -> [AssetRef]
-  -> IO (Either NodeComputeFailure NodeComputeSuccess)
+
+concatAudioFiles :: FilePath -> [FilePath] -> FilePath -> IO ()
+concatAudioFiles ffmpegBin inputPaths outputPath =
+  withSystemTempDirectory "pitcher-audio-concat" $ \tmpDir -> do
+    let
+      listFile = tmpDir </> "audio-list.txt"
+    writeConcatListFile listFile inputPaths
+    runProcChecked ffmpegBin
+      [ "-y"
+      , "-f", "concat"
+      , "-safe", "0"
+      , "-i", listFile
+      , "-c:a", "libmp3lame"
+      , "-q:a", "2"
+      , outputPath
+      ]
+
+
+renderSegmentWithAssets :: TaskRunnerEnv -> LeasedNode -> UUID -> AssetRef -> [AssetRef]
+                            -> IO (Either NodeComputeFailure NodeComputeSuccess)
 renderSegmentWithAssets env node dialogueEid audioAsset imageAssets =
   withSystemTempDirectory "pitcher-run-segment" $ \tmpDir -> do
-    let audioPath = tmpDir </> "dialogue.mp3"
-        outPath = tmpDir </> "segment.mp4"
+    let
+      audioPath = tmpDir </> "dialogue.mp3"
+      outPath = tmpDir </> "segment.mp4"
 
     Ao.downloadAssetToPath env.s3 audioAsset.eid audioPath
+    imagePaths <- forM (zip [(1 :: Int) ..] imageAssets) $ \(ix, assetRef) ->
+      let
+        imgPath = tmpDir </> ("img_" <> show ix <> ".png")
+      in do
+      Ao.downloadAssetToPath env.s3 assetRef.eid imgPath
+      pure imgPath
+    renderSegmentWithFiles env node dialogueEid outPath audioPath imagePaths
 
-    imagePaths <-
-      forM (zip [(1 :: Int) ..] imageAssets) $ \(ix, assetRef) -> do
-        let path = tmpDir </> ("img_" <> show ix <> ".png")
-        Ao.downloadAssetToPath env.s3 assetRef.eid path
-        pure path
 
-    durationRes <-
-      try $
-        probeDurationSeconds env.video.ffprobeBin audioPath
-      :: IO (Either SomeException Double)
+renderSegmentWithConcatAudio :: TaskRunnerEnv -> LeasedNode -> UUID -> FilePath -> [AssetRef] -> IO (Either NodeComputeFailure NodeComputeSuccess)
+renderSegmentWithConcatAudio env node dialogueEid audioPath imageAssets =
+  withSystemTempDirectory "pitcher-run-segment" $ \tmpDir -> do
+    imagePaths <- forM (zip [(1 :: Int) ..] imageAssets) $ \(ix, assetRef) ->
+      let
+        imgPath = tmpDir </> ("img_" <> show ix <> ".png")
+      in do
+      Ao.downloadAssetToPath env.s3 assetRef.eid imgPath
+      pure imgPath
+    renderSegmentWithFiles env node dialogueEid tmpDir audioPath imagePaths
 
+
+renderSegmentWithFiles :: TaskRunnerEnv -> LeasedNode -> UUID -> FilePath -> FilePath -> [FilePath]
+              -> IO (Either NodeComputeFailure NodeComputeSuccess)
+renderSegmentWithFiles env node dialogueEid tmpDir audioPath imagePaths = do
+    let
+      outPath = tmpDir </> "segment.mp4"
+    
+    durationRes <- try $ probeDurationSeconds env.video.ffprobeBin audioPath :: IO (Either SomeException Double)
     case durationRes of
-      Left ex ->
-        pure . Left . retryableFailure $
-          "ffprobe failed for segment audio: " <> T.pack (show ex)
-
+      Left ex -> pure . Left . retryableFailure $ "ffprobe failed for segment audio: " <> T.pack (show ex)
       Right audioDuration -> do
         sentenceBodies <- loadDialogueSentencesByEid env.pool dialogueEid
         visualAnchors <- loadDialogueVisualSentenceAnchorsByDialogueEid env.pool dialogueEid
 
-        let shotPlan =
-              buildTimedShotPlan sentenceBodies visualAnchors imagePaths audioDuration
+        let
+          shotPlan = buildTimedShotPlan sentenceBodies visualAnchors imagePaths audioDuration
 
-        renderRes <-
-          try $
-            case imagePaths of
-              [] ->
-                renderAudioOnlySegment env.video audioPath audioDuration outPath
-
+        renderRes <- try $ case imagePaths of
+              [] -> renderAudioOnlySegment env.video audioPath audioDuration outPath
               _ -> do
-                stillClips <-
-                  forM (zip [(1 :: Int) ..] shotPlan) $ \(ix, (imgPath, dur)) -> do
-                    let clipPath = tmpDir </> ("still_" <> show ix <> ".mp4")
+                stillClips <- forM (zip [(1 :: Int) ..] shotPlan) $ \(ix, (imgPath, dur)) ->
+                    let
+                      clipPath = tmpDir </> ("still_" <> show ix <> ".mp4")
+                    in do
                     createStillClip env.video imgPath dur clipPath
                     pure clipPath
 
                 concatStillClipsWithAudio env.video stillClips audioPath outPath
-          :: IO (Either SomeException ())
+            :: IO (Either SomeException ())
 
         case renderRes of
-          Left ex ->
-            pure . Left . retryableFailure $
-              "ffmpeg segment render failed: " <> T.pack (show ex)
+          Left ex -> pure . Left . retryableFailure $ "ffmpeg segment render failed: " <> T.pack (show ex)
 
           Right () -> do
-            upRes <-
-              try $
-                As.uploadFileAsAsset
-                  env.pool
-                  env.s3
-                  outPath
-                  (assetNameForNode node "mp4")
-                  "video/mp4"
-                  ("segment node " <> node.deriveKey)
-              :: IO (Either SomeException AssetRef)
+            upRes <- try $ As.uploadFileAsAsset env.pool env.s3 outPath
+                  (assetNameForNode node "mp4") "video/mp4" ("segment node " <> node.deriveKey)
+                :: IO (Either SomeException AssetRef)
 
             case upRes of
-              Left ex ->
-                pure . Left . retryableFailure $
-                  "Segment upload failed: " <> T.pack (show ex)
+              Left ex -> pure . Left . retryableFailure $ "Segment upload failed: " <> T.pack (show ex)
 
-              Right assetRef ->
-                pure . Right $
-                  NodeComputeSuccess
-                    { asset = assetRef
+              Right assetRef -> pure . Right $ NodeComputeSuccess {
+                      asset = assetRef
                     , requestEid = Nothing
                     , notes = Nothing
                     }
+
 
 --------------------------------------------------------------------------------
 -- Finalization
@@ -567,6 +582,7 @@ runFinalNode env node = do
                 Left ex -> pure . Left . retryableFailure $ "Final upload failed: " <> T.pack (show ex)
                 Right assetRef -> pure . Right $
                     NodeComputeSuccess { asset = assetRef, requestEid = Nothing, notes = Nothing }
+
 
 --------------------------------------------------------------------------------
 -- Input resolution
@@ -647,12 +663,7 @@ loadVisualDescriptionByEid pool visualEid =
 --------------------------------------------------------------------------------
 -- Shot planning
 
-buildTimedShotPlan
-  :: [Text]
-  -> [Maybe Int32]
-  -> [FilePath]
-  -> Double
-  -> [(FilePath, Double)]
+buildTimedShotPlan :: [Text] -> [Maybe Int32] -> [FilePath] -> Double -> [(FilePath, Double)]
 buildTimedShotPlan sentenceBodies visualAnchors imagePaths totalDuration
   | null imagePaths = []
   | length imagePaths == 1 = [(head imagePaths, max 0.8 totalDuration)]
