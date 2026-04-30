@@ -86,3 +86,16 @@ selectVisualDescriptionByEidStmt =
     where v.eid = $1::uuid
     limit 1
   |]
+
+
+selectVisualOwnerAndAnchorByEidStmt :: Statement UUID (UUID, Maybe Int32)
+selectVisualOwnerAndAnchorByEidStmt =
+  [TH.singletonStatement|
+    select
+      d.eid::uuid
+      , v.sentence_ord::int4?
+    from prod.dialogue_visual v
+    join prod.dialogue d on d.uid = v.dialogue_fk
+    where v.eid = $1::uuid
+    limit 1
+  |]

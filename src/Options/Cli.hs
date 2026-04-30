@@ -21,7 +21,7 @@ data CliOptions = CliOptions {
 
 data IngestOpts = IngestOpts
   { inputPath :: FilePath
-  , slug :: Text
+  , refID :: IngestIdOpt
   , title :: Text
   , language :: Text
   , speaker :: Maybe Text
@@ -29,6 +29,11 @@ data IngestOpts = IngestOpts
   }
   deriving (Eq, Show)
 
+
+data IngestIdOpt =
+  IngestIdEid Text
+  | IngestIdName Text
+  deriving (Eq, Show)
 
 textOption :: Mod OptionFields String -> Parser Text
 textOption mods =
@@ -153,12 +158,9 @@ ingestOptsP :: Parser IngestOpts
 ingestOptsP =
   IngestOpts
     <$> strArgument (
-          metavar "PATH" <> help "UTF-8 narration text file to ingest."
+          metavar "PATH" <> help "Narration text file to ingest."
         )
-    <*> strArgument (
-           metavar "LABEL"
-          <> help "Stable narration label used as the Pitcher identity key."
-          )
+    <*> ingestIdOptsP
     <*> textOption
           (  long "title"
           <> metavar "NARRATION_TITLE"
@@ -183,6 +185,12 @@ ingestOptsP =
           <> help "Parse and validate the narration without writing to the database."
           )
 
+
+ingestIdOptsP :: Parser IngestIdOpt
+ingestIdOptsP =
+  IngestIdEid <$> strOption ( long "eid" <> metavar "EID" <> help "EID for the existing narration (update)." )
+  <|> IngestIdName <$> strOption ( long "name" <> metavar "NAME" <> help "Nickname to refer the narration as." )
+  
 
 launchOptsP :: Parser LaunchOpts
 launchOptsP =

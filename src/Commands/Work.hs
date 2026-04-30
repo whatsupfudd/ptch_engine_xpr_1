@@ -58,7 +58,7 @@ workCmd opts rtOpts =
           , fadeDurationSeconds = 0.5
           }
       in do
-      putStrLn $ "@[workCmd] using s3store: " <> show rtOpts.s3store
+      -- putStrLn $ "@[workCmd] using s3store: " <> show rtOpts.s3store
       Mc.runContT pgPool (mainWorker wCap aiCfg s3Cfg videoCfg)
 
 

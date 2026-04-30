@@ -3,6 +3,8 @@
 module DB.IngestStmt
   ( upsertNarrationStmt
   , selectNarrationUidStmt
+  , selectNarrationEidStmt
+  , selectNarrationByNameStmt
   , selectDialogueIdentityRowsStmt
   , selectVisualIdentityRowsStmt
   , deleteDialogueTreeStmt
@@ -14,6 +16,7 @@ module DB.IngestStmt
 import Data.Int (Int32, Int64)
 import Data.Text (Text)
 import Data.UUID (UUID)
+import Data.Time.Clock (UTCTime)
 import Data.Vector (Vector)
 
 import Hasql.Statement (Statement)
@@ -57,6 +60,27 @@ selectNarrationUidStmt =
     where n.eid = $1::uuid
     limit 1
   |]
+
+
+selectNarrationEidStmt :: Statement UUID (Maybe (Int64, Text, UTCTime))
+selectNarrationEidStmt =
+  [TH.maybeStatement|
+    select
+      n.uid::int8, n.title::text, n.created_at::timestamptz
+    from prod.narration n
+    where n.eid = $1::uuid
+  |]
+
+
+selectNarrationByNameStmt :: Statement Text (Maybe (Int64, UUID, Text, UTCTime))
+selectNarrationByNameStmt =
+  [TH.maybeStatement|
+    select
+      n.uid::int8, n.eid::uuid, n.title::text, n.created_at::timestamptz
+    from prod.narration n
+    where n.title = $1::text
+  |]
+
 
 --------------------------------------------------------------------------------
 -- Existing identity lookup

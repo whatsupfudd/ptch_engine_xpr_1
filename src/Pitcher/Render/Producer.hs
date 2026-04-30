@@ -305,23 +305,23 @@ mkSectionSegmentNode cfg section =
         <> imageTimingParts
         <> dialogueParts
 
+    sourceInputs =
+      [ sourceInput 0 "dialogue" dlg.eid (Just "dialogue")
+      | dlg <- section.dialogues
+      ]
+
     audioInputs =
-      zipWith
-        (\ix n -> nodeInput ix n.deriveKey (Just "audio"))
-        [1..]
-        audioNodes
+      [ nodeInput 0 audioNode.deriveKey (Just "audio")
+      | audioNode <- audioNodes
+      ]
 
     imageInputs =
-      zipWith
-        (\ix n -> nodeInput ix n.deriveKey (Just "image"))
-        [length audioInputs + 1 ..]
-        imageNodes
+      [ nodeInput 0 imageNode.deriveKey (Just "image")
+      | imageNode <- imageNodes
+      ]
 
-    sourceInputs =
-      zipWith
-        (\ix dlg -> sourceInput ix "dialogue" dlg.eid (Just "dialogue"))
-        [1..]
-        section.dialogues
+    allInputs =
+      renumberInputs (sourceInputs <> audioInputs <> imageInputs)
 
   in
   RenderNodeSpec
@@ -340,9 +340,13 @@ mkSectionSegmentNode cfg section =
           , "visualEids" .= map (.eid) section.visuals
           ]
     , artifactKind = "segment"
-    , inputs = sourceInputs <> audioInputs <> imageInputs
+    , inputs = allInputs
     , maxAttempts = cfg.defaultMaxAttempts
     }
+  where
+  renumberInputs :: [RenderInputSpec] -> [RenderInputSpec]
+  renumberInputs =
+    zipWith (\ix input -> (input :: RenderInputSpec) { ord = ix }) [1..]
 
 
 mkFinalNodeFromSections :: ProducerCfg -> NarrationRender -> [RenderSection] -> RenderNodeSpec
@@ -591,7 +595,7 @@ producerTickTx _cfg jobUid = do
 
 persistGraph :: Pool -> Int64 -> RenderGraph -> IO ()
 persistGraph pool jobUid graph = do
-  putStrLn $ "@[persistGraph] graph: " <> show graph
+  -- putStrLn $ "@[persistGraph] graph: " <> show graph
   runTx "persistGraphTx" pool $ persistGraphTx jobUid graph
 
 

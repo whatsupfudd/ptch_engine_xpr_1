@@ -135,6 +135,14 @@ retryableFailure msg =
     , requestEid = Nothing
     }
 
+
+data SectionTiming = SectionTiming {
+    sentenceBodies :: [Text]
+  , visualAnchors :: [Maybe Int32]
+  }
+  deriving (Eq, Show)
+
+
 --------------------------------------------------------------------------------
 -- Public entry points
 
@@ -146,16 +154,11 @@ runLeasedNodeToCompletion env caps node = do
   -}
 
   withHeartbeat env.pool caps node $ do
-    res <-
-      try (dispatchNodeCompute env node)
-        :: IO (Either SomeException (Either NodeComputeFailure NodeComputeSuccess))
+    res <- try (dispatchNodeCompute env node) :: IO (Either SomeException (Either NodeComputeFailure NodeComputeSuccess))
 
     case res of
-      Left ex ->
-        completeNodeFailure
-          env.pool
-          CompleteFailure
-            { nodeUid = node.nodeUid
+      Left ex -> completeNodeFailure env.pool CompleteFailure {
+              nodeUid = node.nodeUid
             , owner = caps.owner
             , retryable = True
             , errorText = T.pack (show ex)
@@ -163,11 +166,8 @@ runLeasedNodeToCompletion env caps node = do
             , requestEid = Nothing
             }
 
-      Right (Left failure) ->
-        completeNodeFailure
-          env.pool
-          CompleteFailure
-            { nodeUid = node.nodeUid
+      Right (Left failure) -> completeNodeFailure env.pool CompleteFailure {
+              nodeUid = node.nodeUid
             , owner = caps.owner
             , retryable = failure.retryable
             , errorText = failure.errorText
@@ -175,17 +175,15 @@ runLeasedNodeToCompletion env caps node = do
             , requestEid = failure.requestEid
             }
 
-      Right (Right success) ->
-        completeNodeSuccess
-          env.pool
-          CompleteSuccess
-            { nodeUid = node.nodeUid
+      Right (Right success) -> completeNodeSuccess env.pool CompleteSuccess {
+              nodeUid = node.nodeUid
             , owner = caps.owner
             , assetUid = success.asset.uid
             , assetEid = success.asset.eid
             , requestEid = success.requestEid
             , notes = success.notes
             }
+
 
 dispatchNodeCompute :: TaskRunnerEnv -> LeasedNode -> IO (Either NodeComputeFailure NodeComputeSuccess)
 dispatchNodeCompute env node =
@@ -207,8 +205,7 @@ withHeartbeat pool caps node action =
   bracket start stop (const action)
   where
     periodMicros :: Int
-    periodMicros =
-      max 1000000 ((max 3 (fromIntegral caps.leaseSeconds) `div` 3) * 1000000)
+    periodMicros = max 1000000 ((max 3 (fromIntegral caps.leaseSeconds) `div` 3) * 1000000)
 
     start :: IO (MVar (), ThreadId)
     start = do
@@ -226,8 +223,7 @@ withHeartbeat pool caps node action =
       threadDelay periodMicros
       mbStop <- tryReadMVar stopVar
       case mbStop of
-        Just _ ->
-          pure ()
+        Just _ -> pure ()
         Nothing -> do
           _ <- heartbeatNodeLease pool node.nodeUid caps
           loop stopVar
@@ -384,8 +380,8 @@ runImageNode env node = do
 --   node inputs role=audio: upstream audio derive key
 --   node inputs role=image: upstream image derive keys, in visual order
 
-runSegmentNode :: TaskRunnerEnv -> LeasedNode -> IO (Either NodeComputeFailure NodeComputeSuccess)
-runSegmentNode env node = do
+runSegmentNodeA :: TaskRunnerEnv -> LeasedNode -> IO (Either NodeComputeFailure NodeComputeSuccess)
+runSegmentNodeA env node = do
   inputs <- loadNodeInputs env.pool node.nodeUid
   case resolveDialogueEidForSegment node inputs of
     Left err -> pure . Left $ fatalFailure err
@@ -404,6 +400,7 @@ runSegmentNode env node = do
               (Just audioAsset, Just imageAssets) ->
                 renderSegmentWithAssets env node dialogueEid audioAsset imageAssets
 
+        -- In case there's ever many audio segments generated for a single dialogue:
         manyAudioKeys -> do
           withSystemTempDirectory "pitcher-audio-concat" $ \tmpDir -> do
             eiFilePath <- prepareSegmentAudio env node tmpDir manyAudioKeys
@@ -415,6 +412,124 @@ runSegmentNode env node = do
                   Nothing -> pure . Left $ fatalFailure ("Segment node is missing one or more upstream image assets: " <> node.deriveKey)
                   Just imageAssets ->
                     renderSegmentWithConcatAudio env node dialogueEid concatAudioFile imageAssets
+
+
+runSegmentNode :: TaskRunnerEnv -> LeasedNode -> IO (Either NodeComputeFailure NodeComputeSuccess)
+runSegmentNode env node = do
+  inputs <- loadNodeInputs env.pool node.nodeUid
+
+  let
+    dialogueEids = resolveDialogueEidsForSegment inputs
+    audioKeys = resolveNodeInputKeys inputs "audio"
+    imageKeys = resolveNodeInputKeys inputs "image"
+
+  if null dialogueEids then
+    pure . Left $ fatalFailure ("Segment node has no dialogue source inputs: " <> node.deriveKey)
+  else if null audioKeys then
+    pure . Left $ fatalFailure ("Segment node has no audio node inputs: " <> node.deriveKey)
+  else
+    withSystemTempDirectory "pitcher-run-segment" $ \tmpDir -> do
+      audioPathRes <- prepareSegmentAudio env node tmpDir audioKeys
+
+      case audioPathRes of
+        Left err -> pure (Left err)
+
+        Right sectionAudioPath -> do
+          imageAssetsRes <- mapM (lookupUpstreamAssetRef env node) imageKeys
+          case sequence imageAssetsRes of
+            Nothing -> pure . Left $
+                fatalFailure ("Segment node is missing one or more upstream image assets: " <> node.deriveKey)
+
+            Just imageAssets -> do
+              imagePaths <- forM (zip [(1 :: Int) ..] imageAssets) $ \(ix, assetRef) ->
+                  let
+                    imgPath = tmpDir </> ("img_" <> show ix <> ".png")
+                  in do
+                  Ao.downloadAssetToPath env.s3 assetRef.eid imgPath
+                  pure imgPath
+              renderSegmentSectionWithFiles env node dialogueEids tmpDir sectionAudioPath imagePaths
+
+
+renderSegmentSectionWithFiles :: TaskRunnerEnv -> LeasedNode -> [UUID] -> FilePath
+              -> FilePath -> [FilePath]
+              -> IO (Either NodeComputeFailure NodeComputeSuccess)
+renderSegmentSectionWithFiles env node dialogueEids tmpDir audioPath imagePaths = do
+  let
+    outPath = tmpDir </> "segment.mp4"
+  putStrLn $ "@[renderSegmentSectionWithFiles] audioPath: " <> audioPath <> ", dialogueEids="
+      <> show dialogueEids <> ", images=" <> show imagePaths
+
+  durationRes <- try $ probeDurationSeconds env.video.ffprobeBin audioPath :: IO (Either SomeException Double)
+
+  case durationRes of
+    Left ex -> pure . Left . retryableFailure $ "ffprobe failed for segment audio: " <> T.pack (show ex)
+    Right audioDuration -> do
+      sectionTiming <- loadSectionTiming env.pool node dialogueEids
+
+      let
+        shotPlan = buildTimedShotPlan sectionTiming.sentenceBodies sectionTiming.visualAnchors imagePaths audioDuration
+
+      renderRes <- try $
+          case imagePaths of
+            [] -> renderAudioOnlySegment env.video audioPath audioDuration outPath
+
+            _ -> do
+              stillClips <- forM (zip [(1 :: Int) ..] shotPlan) $ \(ix, (imgPath, dur)) ->
+                  let
+                    clipPath = tmpDir </> ("still_" <> show ix <> ".mp4")
+                  in do
+                  createStillClip env.video imgPath dur clipPath
+                  pure clipPath
+              concatStillClipsWithAudio env.video stillClips audioPath outPath
+        :: IO (Either SomeException ())
+
+      case renderRes of
+        Left ex -> pure . Left . retryableFailure $ "ffmpeg segment render failed: " <> T.pack (show ex)
+
+        Right () -> do
+          upRes <- try $ As.uploadFileAsAsset env.pool env.s3 outPath
+                (assetNameForNode node "mp4") "video/mp4" ("segment node " <> node.deriveKey)
+                :: IO (Either SomeException AssetRef)
+          case upRes of
+            Left ex -> pure . Left . retryableFailure $ "Segment upload failed: " <> T.pack (show ex)
+            Right assetRef -> pure . Right $ NodeComputeSuccess { asset = assetRef, requestEid = Nothing, notes = Nothing }
+
+
+loadSectionTiming :: Pool -> LeasedNode -> [UUID] -> IO SectionTiming
+loadSectionTiming pool node dialogueEids = do
+  sentenceBlocks <- forM dialogueEids $ \dialogueEid -> loadDialogueSentencesByEid pool dialogueEid
+
+  let
+    sentenceBodies = concat sentenceBlocks
+    sentenceCounts = map (fromIntegral . length) sentenceBlocks :: [Int32]
+    sentenceOffsets = init (scanl (+) 0 sentenceCounts)
+    dialogueOffsets = zip dialogueEids sentenceOffsets
+    visualEids = paramUuidList "visualEids" node.params
+
+  visualAnchorRows <- mapM (loadVisualOwnerAndAnchorByEid pool) visualEids
+
+  let
+    visualAnchors = [ fmap (+ sentenceOffsetFor dialogueOffsets ownerDialogueEid) localSentenceOrd
+              | (ownerDialogueEid, localSentenceOrd) <- visualAnchorRows
+      ]
+
+  pure SectionTiming { sentenceBodies = sentenceBodies, visualAnchors = visualAnchors }
+
+
+
+sentenceOffsetFor :: [(UUID, Int32)] -> UUID -> Int32
+sentenceOffsetFor offsets dialogueEid =
+  fromMaybe 0 (lookup dialogueEid offsets)
+
+paramUuidList :: Text -> Ae.Value -> [UUID]
+paramUuidList name val =
+  fromMaybe [] $
+    Aet.parseMaybe parser val
+  where
+    parser =
+      Ae.withObject "params" $ \o -> do
+        rawValues <- o .: Aek.fromText name
+        pure [ uuidVal | raw <- rawValues, Just uuidVal <- [Uu.fromText raw] ]
 
 
 prepareSegmentAudio :: TaskRunnerEnv -> LeasedNode -> FilePath -> [Text] -> IO (Either NodeComputeFailure FilePath)
@@ -597,25 +712,32 @@ resolveSourceEid node inputs expectedRefKind expectedRole =
     Just eid -> Right eid
 
     Nothing ->
-      case
-        [ eid
-        | input <- inputs
-        , input.inputKind == "source"
-        , input.refKind == expectedRefKind
-        , input.role == Just expectedRole
-        , Just eid <- [input.refEid]
-        ] of
-        eid : _ -> Right eid
-
+      let
+        matchingInputs =
+          [ eid |
+                input <- inputs
+              , input.inputKind == "source", input.refKind == expectedRefKind, input.role == Just expectedRole
+              , Just eid <- [input.refEid]
+          ]
+      in
+      case matchingInputs of
         [] -> Left $ "Missing source input for node " <> node.deriveKey
               <> "; expected refKind=" <> expectedRefKind
               <> " role=" <> expectedRole
+        eid : _ -> Right eid
 
 
 resolveDialogueEidForSegment :: LeasedNode -> [RenderInput] -> Either Text UUID
 resolveDialogueEidForSegment node inputs =
   resolveSourceEid node inputs "dialogue" "dialogue"
 
+
+resolveDialogueEidsForSegment :: [RenderInput] -> [UUID]
+resolveDialogueEidsForSegment inputs =
+  [ eid | input <- L.sortOn (.ord) inputs
+      , input.inputKind == "source", input.refKind == "dialogue", input.role == Just "dialogue"
+      , Just eid <- [input.refEid]
+  ]
 
 resolveNodeInputKeys :: [RenderInput] -> Text -> [Text]
 resolveNodeInputKeys inputs expectedRole =
@@ -648,21 +770,26 @@ loadDialogueSentencesByEid :: Pool -> UUID -> IO [Text]
 loadDialogueSentencesByEid pool dialogueEid = do
   rows <- runSessionOrThrow "selectDialogueSentenceBodiesByEidStmt" pool $
       statement dialogueEid Ts.selectDialogueSentenceBodiesByEidStmt
-
   pure [ body | (_ord, body) <- Vc.toList rows ]
 
 loadDialogueVisualSentenceAnchorsByDialogueEid :: Pool -> UUID -> IO [Maybe Int32]
 loadDialogueVisualSentenceAnchorsByDialogueEid pool dialogueEid = do
-  rows <-
-    runSessionOrThrow "selectDialogueVisualAnchorsByDialogueEidStmt" pool $
+  rows <- runSessionOrThrow "selectDialogueVisualAnchorsByDialogueEidStmt" pool $
       statement dialogueEid Ts.selectDialogueVisualAnchorsByDialogueEidStmt
-
   pure [ sentenceIx | (_ord, sentenceIx) <- Vc.toList rows ]
+
 
 loadVisualDescriptionByEid :: Pool -> UUID -> IO (Maybe Text)
 loadVisualDescriptionByEid pool visualEid =
   runSessionOrThrow "selectVisualDescriptionByEidStmt" pool $
     statement visualEid Ts.selectVisualDescriptionByEidStmt
+
+
+loadVisualOwnerAndAnchorByEid :: Pool -> UUID -> IO (UUID, Maybe Int32)
+loadVisualOwnerAndAnchorByEid pool visualEid =
+  runSessionOrThrow "selectVisualOwnerAndAnchorByEidStmt" pool $
+      statement visualEid Ts.selectVisualOwnerAndAnchorByEidStmt
+
 
 --------------------------------------------------------------------------------
 -- Shot planning
@@ -741,9 +868,9 @@ renderAudioOnlySegment cfg audioPath dur outPath =
     , "-i", "color=c=black:s=" <> sizeArg cfg <> ":r=" <> show cfg.fps <> ":d=" <> show dur
     , "-i", audioPath
     , "-shortest"
-    , "-c:v", "libx264"
+    , "-c:v", "h264_videotoolbox"
     , "-pix_fmt", "yuv420p"
-    , "-c:a", "aac"
+    , "-c:a", "aac_at"
     , outPath
     ]
 
@@ -756,7 +883,7 @@ createStillClip cfg imagePath dur outPath =
     , "-t", show dur
     , "-vf", baseVideoFilter cfg
     , "-an"
-    , "-c:v", "libx264"
+    , "-c:v", "h264_videotoolbox"
     , "-pix_fmt", "yuv420p"
     , outPath
     ]
@@ -775,9 +902,9 @@ concatStillClipsWithAudio cfg stillClips audioPath outPath =
       , "-i", listFile
       , "-i", audioPath
       , "-shortest"
-      , "-c:v", "libx264"
+      , "-c:v", "h264_videotoolbox"
       , "-pix_fmt", "yuv420p"
-      , "-c:a", "aac"
+      , "-c:a", "aac_at"
       , outPath
       ]
 
@@ -811,8 +938,8 @@ concatSegmentsWithGapsAndFades cfg gapSeconds fadeSeconds segmentPaths outputPat
           [ "-filter_complex", filterGraph
           , "-map", videoMap
           , "-map", audioMap
-          , "-c:v", "libx264"
-          , "-c:a", "aac"
+          , "-c:v", "h264_videotoolbox"
+          , "-c:a", "aac_at"
           , "-movflags", "+faststart"
           , outputPath
           ]

@@ -24,14 +24,15 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import qualified Data.Text.IO as TIO
+import Data.Time.Clock (UTCTime)
 import Data.UUID (UUID)
 import qualified Data.UUID as Uu
 import qualified Data.UUID.V4 as U4
 import qualified Data.Vector as Vc
 
-import Hasql.Pool (Pool)
+import Hasql.Pool (Pool, use)
 import qualified Hasql.Pool as Pool
-import Hasql.Session (Session)
+import qualified Hasql.Session as HS
 import qualified Hasql.Transaction as HT
 import qualified Hasql.Transaction.Sessions as HTS
 
@@ -41,20 +42,9 @@ import Text.Megaparsec
   , runParser
   )
 
-import Options.Cli
-  ( IngestOpts(..)
-  )
-
-import Pitcher.Ingest.Parser
-  ( narrationP
-  )
-
-import Pitcher.NarrationTypes
-  ( Dialogue(..)
-  , DialogueVisual(..)
-  , Narration(..)
-  )
-
+import Options.Cli ( IngestOpts(..), IngestIdOpt(..) )
+import Pitcher.Ingest.Parser ( narrationP )
+import Pitcher.NarrationTypes ( Dialogue(..), DialogueVisual(..), Narration(..) )
 import qualified DB.IngestStmt as Is
 
 
@@ -109,44 +99,80 @@ summarizeNarration narration =
 ingest :: IngestOpts -> Pool -> IO ()
 ingest opts pool = do
   sourceText <- readUtf8TextFile opts.inputPath
-  narrationEid <- U4.nextRandom
+  eiRez <- case opts.refID of
+    IngestIdEid tEid -> 
+      case Uu.fromText tEid of
+        Nothing -> pure . Left $ "@[ingest] invalid eid: " <> T.unpack tEid
+        Just eid -> do
+          -- This is an update, so narration needs to exist.
+          eiRez <- resolveNarrationEid pool eid
+          case eiRez of
+            Left errMsg -> pure . Left $ errMsg
+            Right Nothing -> pure . Left $ "@[ingest] narration not found: " <> T.unpack tEid
+            Right (Just (uid, _, _)) -> pure $ Right (eid, Just uid)
+    IngestIdName name -> do
+      eiRez <- findNarrationByName pool name
+      case eiRez of
+        Left errMsg -> pure . Left $ errMsg
+        Right Nothing -> do
+          newEid <- U4.nextRandom
+          pure $ Right (newEid, Nothing)
+        Right (Just (uid, eid, _, _)) -> pure . Right $ (eid, Just uid)
 
-  narration <- either (throwIO . userError) pure $ parseNarration opts.inputPath sourceText
+  case eiRez of
+    Left errMsg ->
+      putStrLn $ "@[ingest] err: " <> errMsg
+    Right (eid, mbUid) -> do
+      narration <- either (throwIO . userError) pure $ parseNarration opts.inputPath sourceText
 
-  case validateNarration narration of
-    Left errs -> throwIO . userError $ "Invalid narration:\n" <> T.unpack (T.unlines errs)
-    Right () -> pure ()
+      case validateNarration narration of
+        Left errs -> throwIO . userError $ "Invalid narration:\n" <> T.unpack (T.unlines errs)
+        Right () -> pure ()
 
-  let previewReport = summarizeNarration narration
+      let previewReport = summarizeNarration narration
 
-  if opts.validateOnly then do
-    TIO.putStrLn $
-      "Validated narration from "
-        <> T.pack opts.inputPath
-        <> ": "
-        <> renderReport previewReport
-    putStrLn $ "narration: " <> show narration
-  else do
-    -- narrationEid <- resolveNarrationEid opts.slug
+      if opts.validateOnly then do
+        TIO.putStrLn $
+          "Validated narration from "
+            <> T.pack opts.inputPath
+            <> ": "
+            <> renderReport previewReport
+        putStrLn $ "narration: " <> show narration
+      else do
+       case mbUid of
+         -- New narration:
+         Nothing -> do      
+           freshDialogueEids <- replicateM (length narration.dialogues) U4.nextRandom
+           freshVisualEids <- replicateM (visualCount narration) U4.nextRandom
+           report <- runPoolSession pool $
+              HTS.transaction HTS.Serializable HTS.Write $ persistNarrationTx opts eid freshDialogueEids freshVisualEids narration
+           TIO.putStrLn $ "Ingested narration '" <> T.pack (Uu.toString eid) <> "' from "
+              <> T.pack opts.inputPath <> ": " <> renderReport report
+         -- Existing narration:
+         Just uid -> do
+           -- TODO: update dialogues and visuals:
+           let
+            report = IngestReport 0 0 0
+           TIO.putStrLn $ "Updated narration '" <> T.pack (Uu.toString eid) <> "' from "
+                <> T.pack opts.inputPath <> ": " <> renderReport report
 
-    freshDialogueEids <- replicateM (length narration.dialogues) U4.nextRandom
-    freshVisualEids <- replicateM (visualCount narration) U4.nextRandom
+resolveNarrationEid :: Pool -> UUID -> IO (Either String (Maybe (Int64, Text, UTCTime)))
+resolveNarrationEid pool eid = do
+  eiRez <- use pool $ HS.statement eid Is.selectNarrationEidStmt
+  case eiRez of
+    Left err -> pure . Left $ "@[resolveNarrationEid] selectNarrationEidStmt err: "
+                <> show err <> " (eid: " <> Uu.toString eid <> ")"
+    Right mbRow -> pure $ Right mbRow
 
-    report <- runPoolSession pool $
-        HTS.transaction HTS.Serializable HTS.Write $ persistNarrationTx opts narrationEid freshDialogueEids freshVisualEids narration
 
-    TIO.putStrLn $ "Ingested narration '" <> T.pack (Uu.toString narrationEid) <> "' from "
-        <> T.pack opts.inputPath <> ": " <> renderReport report
+findNarrationByName :: Pool -> Text -> IO (Either String (Maybe (Int64, UUID, Text, UTCTime)))
+findNarrationByName pool name = do
+  eiRez <- use pool $ HS.statement name Is.selectNarrationByNameStmt
+  case eiRez of
+    Left err -> pure . Left $ "@[findNarrationByName] selectNarrationByNameStmt err: "
+                <> show err <> " (name: " <> T.unpack name <> ")"
+    Right mbRow -> pure $ Right mbRow
 
-
-resolveNarrationEid :: Text -> IO UUID
-resolveNarrationEid txt =
-  case Uu.fromText txt of
-    Nothing ->
-      throwIO . userError $
-        "Narration identity must be a UUID; got: " <> T.unpack txt
-    Just eid ->
-      pure eid
 
 visualCount :: Narration -> Int
 visualCount narration =
@@ -537,15 +563,12 @@ parseNarration inputPath sourceText =
 --------------------------------------------------------------------------------
 -- DB session helper
 
-runPoolSession :: Pool -> Session a -> IO a
+runPoolSession :: Pool -> HS.Session a -> IO a
 runPoolSession pool session = do
   result <- Pool.use pool session
   case result of
-    Left err ->
-      throwIO . userError $
-        "Database session failed: " <> show err
-    Right value ->
-      pure value
+    Left err -> throwIO . userError $ "Database session failed: " <> show err
+    Right value -> pure value
 
 --------------------------------------------------------------------------------
 -- Small helpers
