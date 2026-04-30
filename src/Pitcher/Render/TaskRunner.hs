@@ -443,7 +443,8 @@ prepareSegmentAudio env node tmpDir audioKeys = do
 
 
 concatAudioFiles :: FilePath -> [FilePath] -> FilePath -> IO ()
-concatAudioFiles ffmpegBin inputPaths outputPath =
+concatAudioFiles ffmpegBin inputPaths outputPath = do
+  putStrLn $ "@[concatAudioFiles] inputPaths: " <> show inputPaths <> " to " <> outputPath
   withSystemTempDirectory "pitcher-audio-concat" $ \tmpDir -> do
     let
       listFile = tmpDir </> "audio-list.txt"
@@ -466,7 +467,7 @@ renderSegmentWithAssets env node dialogueEid audioAsset imageAssets =
     let
       audioPath = tmpDir </> "dialogue.mp3"
       outPath = tmpDir </> "segment.mp4"
-
+    putStrLn $ "@[renderSegmentWithAssets] audioPath: " <> audioPath <> ", images: " <> show imageAssets <> " to " <> outPath
     Ao.downloadAssetToPath env.s3 audioAsset.eid audioPath
     imagePaths <- forM (zip [(1 :: Int) ..] imageAssets) $ \(ix, assetRef) ->
       let
@@ -480,6 +481,7 @@ renderSegmentWithAssets env node dialogueEid audioAsset imageAssets =
 renderSegmentWithConcatAudio :: TaskRunnerEnv -> LeasedNode -> UUID -> FilePath -> [AssetRef] -> IO (Either NodeComputeFailure NodeComputeSuccess)
 renderSegmentWithConcatAudio env node dialogueEid audioPath imageAssets =
   withSystemTempDirectory "pitcher-run-segment" $ \tmpDir -> do
+    putStrLn $ "@[renderSegmentWithConcatAudio] audioPath: " <> audioPath <> ", images: " <> show imageAssets
     imagePaths <- forM (zip [(1 :: Int) ..] imageAssets) $ \(ix, assetRef) ->
       let
         imgPath = tmpDir </> ("img_" <> show ix <> ".png")
@@ -494,7 +496,9 @@ renderSegmentWithFiles :: TaskRunnerEnv -> LeasedNode -> UUID -> FilePath -> Fil
 renderSegmentWithFiles env node dialogueEid tmpDir audioPath imagePaths = do
     let
       outPath = tmpDir </> "segment.mp4"
-    
+
+    putStrLn $ "@[renderSegmentWithFiles] audioPath: " <> audioPath <> ", images: " <> show imagePaths
+
     durationRes <- try $ probeDurationSeconds env.video.ffprobeBin audioPath :: IO (Either SomeException Double)
     case durationRes of
       Left ex -> pure . Left . retryableFailure $ "ffprobe failed for segment audio: " <> T.pack (show ex)

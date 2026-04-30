@@ -12,7 +12,7 @@ import DB.Connect (startPg)
 import Assets.S3Ops (makeS3Conn)
 import Options.Cli (ProduceOpts (..))
 import Options.Runtime (RunOptions (..), PgDbConfig (..), AiConfig (..))
-import Pitcher.Render.Producer (ProducerCfg (..))
+import Pitcher.Render.Producer (ProducerCfg (..), TrailingDialoguePolicy(..))
 import Pitcher.Render.Types (RenderOutcome (..))
 import qualified Pitcher.Render.Producer as Pr
 
@@ -31,6 +31,7 @@ produceCmd opts rtOpts = do
           , imageStyleTag = "v1"
           , segmentPolicyTag = "v1"
           , finalPolicyTag = "v1"
+          , trailingDialoguePolicy = AttachTrailingToPreviousSection
         }
       in
       let

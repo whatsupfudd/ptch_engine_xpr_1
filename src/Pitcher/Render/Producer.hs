@@ -16,6 +16,7 @@ module Pitcher.Render.Producer
   , NodeExec(..)
   , SourceKind(..)
   , InputKind(..)
+  , TrailingDialoguePolicy(..)
 
   , launchProducer
   , producerTick
@@ -67,6 +68,7 @@ data ProducerCfg = ProducerCfg
   , finalPolicyTag :: Text
   , finalGapSeconds :: Double
   , finalFadeSeconds :: Double
+  , trailingDialoguePolicy :: TrailingDialoguePolicy
   }
   deriving (Eq, Show)
 
@@ -155,9 +157,25 @@ launchProducer cfg pool narrationEid = do
 --------------------------------------------------------------------------------
 -- Graph builder
 
+data TrailingDialoguePolicy
+  = AttachTrailingToPreviousSection
+  | RenderTrailingAsAudioOnlySection
+  deriving (Eq, Show)
+
+data RenderSection = RenderSection
+  { sectionOrd :: Int
+  , dialogues :: [DialogueRender]
+  , visualOwner :: Maybe DialogueRender
+  , visuals :: [VisualRender]
+  }
+  deriving (Eq, Show)
+
 buildRenderGraph :: ProducerCfg -> NarrationRender -> RenderGraph
 buildRenderGraph cfg narration =
   let
+    sections =
+      buildRenderSections cfg narration.dialogues
+
     audioNodes =
       [ mkAudioNode cfg dlg
       | dlg <- narration.dialogues
@@ -170,18 +188,208 @@ buildRenderGraph cfg narration =
       ]
 
     segmentNodes =
-      [ mkSegmentNode cfg dlg
-      | dlg <- narration.dialogues
+      [ mkSectionSegmentNode cfg section
+      | section <- sections
       ]
 
     finalNode =
-      mkFinalNode cfg narration
+      mkFinalNodeFromSections cfg narration sections
   in
   RenderGraph
     { narrationUid = narration.narrationUid
     , narrationEid = narration.eid
     , nodes = audioNodes <> imageNodes <> segmentNodes <> [finalNode]
     }
+
+buildRenderSections :: ProducerCfg -> [DialogueRender] -> [RenderSection]
+buildRenderSections cfg dialogues =
+  finalizeSections cfg.trailingDialoguePolicy $
+    foldl step initialState dialogues
+  where
+    initialState =
+      ( []  -- completed sections, reversed
+      , []  -- pending dialogues, reversed
+      , Nothing :: Maybe RenderSection
+      )
+
+    step (doneRev, pendingRev, lastSection) dlg
+      | null dlg.visuals =
+          (doneRev, dlg : pendingRev, lastSection)
+
+      | otherwise =
+          let
+            section =
+              RenderSection
+                { sectionOrd = length doneRev + 1
+                , dialogues = reverse (dlg : pendingRev)
+                , visualOwner = Just dlg
+                , visuals = dlg.visuals
+                }
+          in
+          (section : doneRev, [], Just section)
+
+    finalizeSections policy (doneRev, pendingRev, lastSection) =
+      let
+        done = reverse doneRev
+        pending = reverse pendingRev
+      in
+      case pending of
+        [] ->
+          done
+
+        _ ->
+          case policy of
+            RenderTrailingAsAudioOnlySection ->
+              done <>
+                [ RenderSection
+                    { sectionOrd = length done + 1
+                    , dialogues = pending
+                    , visualOwner = Nothing
+                    , visuals = []
+                    }
+                ]
+
+            AttachTrailingToPreviousSection ->
+              case reverse done of
+                [] ->
+                  -- No visual-bearing dialogue exists at all.
+                  -- Fall back to one audio-only section.
+                  [ RenderSection
+                      { sectionOrd = 1
+                      , dialogues = pending
+                      , visualOwner = Nothing
+                      , visuals = []
+                      }
+                  ]
+
+                lastSec : priorRev ->
+                  let
+                    updatedLast = (lastSec :: RenderSection) { dialogues = lastSec.dialogues <> pending }
+                  in
+                  reverse priorRev <> [updatedLast]
+
+
+mkSectionSegmentNode :: ProducerCfg -> RenderSection -> RenderNodeSpec
+mkSectionSegmentNode cfg section =
+  let
+    audioNodes =
+      [ mkAudioNode cfg dlg
+      | dlg <- section.dialogues
+      ]
+
+    imageNodes =
+      [ mkImageNode cfg owner vis
+      | Just owner <- [section.visualOwner]
+      , vis <- section.visuals
+      ]
+
+    imageTimingParts =
+      [ Uu.toText vis.eid <> ":" <> maybe "" tshow vis.sentenceIx
+      | vis <- section.visuals
+      ]
+
+    dialogueParts =
+      [ Uu.toText dlg.eid
+      | dlg <- section.dialogues
+      ]
+
+    dkey =
+      deriveKeyText $
+        [ "segment-section"
+        , tshow section.sectionOrd
+        , cfg.segmentPolicyTag
+        , cfg.renderVersionTag
+        ]
+        <> map (.deriveKey) audioNodes
+        <> map (.deriveKey) imageNodes
+        <> imageTimingParts
+        <> dialogueParts
+
+    audioInputs =
+      zipWith
+        (\ix n -> nodeInput ix n.deriveKey (Just "audio"))
+        [1..]
+        audioNodes
+
+    imageInputs =
+      zipWith
+        (\ix n -> nodeInput ix n.deriveKey (Just "image"))
+        [length audioInputs + 1 ..]
+        imageNodes
+
+    sourceInputs =
+      zipWith
+        (\ix dlg -> sourceInput ix "dialogue" dlg.eid (Just "dialogue"))
+        [1..]
+        section.dialogues
+
+  in
+  RenderNodeSpec
+    { deriveKey = dkey
+    , lane = FuseLane
+    , exec = FfmpegSegmentExec
+    , ord = section.sectionOrd
+    , sourceKind = Nothing
+    , sourceEid = Nothing
+    , params =
+        Ae.object
+          [ "segmentPolicyTag" .= cfg.segmentPolicyTag
+          , "renderVersionTag" .= cfg.renderVersionTag
+          , "sectionOrd" .= section.sectionOrd
+          , "dialogueEids" .= map (.eid) section.dialogues
+          , "visualEids" .= map (.eid) section.visuals
+          ]
+    , artifactKind = "segment"
+    , inputs = sourceInputs <> audioInputs <> imageInputs
+    , maxAttempts = cfg.defaultMaxAttempts
+    }
+
+
+mkFinalNodeFromSections :: ProducerCfg -> NarrationRender -> [RenderSection] -> RenderNodeSpec
+mkFinalNodeFromSections cfg narration sections =
+  let
+    segmentNodes =
+      [ mkSectionSegmentNode cfg section
+      | section <- sections
+      ]
+
+    dkey =
+      deriveKeyText $
+        [ "final"
+        , Uu.toText narration.eid
+        , cfg.finalPolicyTag
+        , cfg.renderVersionTag
+        , tshow cfg.finalGapSeconds
+        , tshow cfg.finalFadeSeconds
+        ]
+        <> map (.deriveKey) segmentNodes
+
+    nodeInputs =
+      zipWith
+        (\ix n -> nodeInput ix n.deriveKey (Just "segment"))
+        [1..]
+        segmentNodes
+
+  in
+  RenderNodeSpec
+    { deriveKey = dkey
+    , lane = FinalizeLane
+    , exec = FfmpegConcatExec
+    , ord = 1000000000
+    , sourceKind = Just NarrationSource
+    , sourceEid = Just narration.eid
+    , params =
+        Ae.object
+          [ "finalPolicyTag" .= cfg.finalPolicyTag
+          , "gapSeconds" .= cfg.finalGapSeconds
+          , "fadeSeconds" .= cfg.finalFadeSeconds
+          , "renderVersionTag" .= cfg.renderVersionTag
+          ]
+    , artifactKind = "final"
+    , inputs = nodeInputs
+    , maxAttempts = cfg.defaultMaxAttempts
+    }
+
 
 --------------------------------------------------------------------------------
 -- Node builders
@@ -382,7 +590,8 @@ producerTickTx _cfg jobUid = do
 -- Graph persistence
 
 persistGraph :: Pool -> Int64 -> RenderGraph -> IO ()
-persistGraph pool jobUid graph =
+persistGraph pool jobUid graph = do
+  putStrLn $ "@[persistGraph] graph: " <> show graph
   runTx "persistGraphTx" pool $ persistGraphTx jobUid graph
 
 
