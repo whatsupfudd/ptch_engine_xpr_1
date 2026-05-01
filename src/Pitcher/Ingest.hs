@@ -42,7 +42,7 @@ import Text.Megaparsec
   , runParser
   )
 
-import Options.Cli ( IngestOpts(..), IngestIdOpt(..) )
+import Options.Cli ( IngestOpts(..), NarrationIdOpt(..) )
 import Pitcher.Ingest.Parser ( narrationP )
 import Pitcher.NarrationTypes ( Dialogue(..), DialogueVisual(..), Narration(..) )
 import qualified DB.IngestStmt as Is
@@ -100,7 +100,7 @@ ingest :: IngestOpts -> Pool -> IO ()
 ingest opts pool = do
   sourceText <- readUtf8TextFile opts.inputPath
   eiRez <- case opts.refID of
-    IngestIdEid tEid -> 
+    EidNI tEid -> 
       case Uu.fromText tEid of
         Nothing -> pure . Left $ "@[ingest] invalid eid: " <> T.unpack tEid
         Just eid -> do
@@ -109,8 +109,8 @@ ingest opts pool = do
           case eiRez of
             Left errMsg -> pure . Left $ errMsg
             Right Nothing -> pure . Left $ "@[ingest] narration not found: " <> T.unpack tEid
-            Right (Just (uid, _, _)) -> pure $ Right (eid, Just uid)
-    IngestIdName name -> do
+            Right (Just (uid, _, _, _)) -> pure $ Right (eid, Just uid)
+    NameNI name -> do
       eiRez <- findNarrationByName pool name
       case eiRez of
         Left errMsg -> pure . Left $ errMsg
@@ -120,43 +120,45 @@ ingest opts pool = do
         Right (Just (uid, eid, _, _)) -> pure . Right $ (eid, Just uid)
 
   case eiRez of
-    Left errMsg ->
-      putStrLn $ "@[ingest] err: " <> errMsg
+    Left errMsg -> putStrLn errMsg
     Right (eid, mbUid) -> do
       narration <- either (throwIO . userError) pure $ parseNarration opts.inputPath sourceText
+      either
+        (\msg -> throwIO . userError $ "Invalid narration:\n" <> T.unpack (T.unlines msg)) pure 
+        (validateNarration narration)
 
-      case validateNarration narration of
-        Left errs -> throwIO . userError $ "Invalid narration:\n" <> T.unpack (T.unlines errs)
-        Right () -> pure ()
-
-      let previewReport = summarizeNarration narration
+      let
+        previewReport = summarizeNarration narration
 
       if opts.validateOnly then do
-        TIO.putStrLn $
-          "Validated narration from "
-            <> T.pack opts.inputPath
-            <> ": "
-            <> renderReport previewReport
+        TIO.putStrLn $ "Validated narration from " <> T.pack opts.inputPath <> ": "
+              <> renderReport previewReport
         putStrLn $ "narration: " <> show narration
       else do
-       case mbUid of
-         -- New narration:
-         Nothing -> do      
-           freshDialogueEids <- replicateM (length narration.dialogues) U4.nextRandom
-           freshVisualEids <- replicateM (visualCount narration) U4.nextRandom
-           report <- runPoolSession pool $
-              HTS.transaction HTS.Serializable HTS.Write $ persistNarrationTx opts eid freshDialogueEids freshVisualEids narration
-           TIO.putStrLn $ "Ingested narration '" <> T.pack (Uu.toString eid) <> "' from "
-              <> T.pack opts.inputPath <> ": " <> renderReport report
-         -- Existing narration:
-         Just uid -> do
-           -- TODO: update dialogues and visuals:
-           let
-            report = IngestReport 0 0 0
-           TIO.putStrLn $ "Updated narration '" <> T.pack (Uu.toString eid) <> "' from "
-                <> T.pack opts.inputPath <> ": " <> renderReport report
+        report <-case mbUid of
+          Nothing -> do      
+            -- New narration:
+            putStrLn $ "New narration: " <> Uu.toString eid
+            freshDialogueEids <- replicateM (length narration.dialogues) U4.nextRandom
+            freshVisualEids <- replicateM (visualCount narration) U4.nextRandom
+            runPoolSession pool $
+              HTS.transaction HTS.Serializable HTS.Write $
+                persistNarrationTx opts eid freshDialogueEids freshVisualEids narration
 
-resolveNarrationEid :: Pool -> UUID -> IO (Either String (Maybe (Int64, Text, UTCTime)))
+          Just uid -> do
+            -- Existing narration:
+            putStrLn $ "Updating narration: " <> Uu.toString eid
+            freshDialogueEids <- replicateM (length narration.dialogues) U4.nextRandom
+            freshVisualEids <- replicateM (visualCount narration) U4.nextRandom
+            runPoolSession pool $
+              HTS.transaction HTS.Serializable HTS.Write $
+                persistNarrationTx opts eid freshDialogueEids freshVisualEids narration
+
+        TIO.putStrLn $ "Ingested narration '" <> T.pack (Uu.toString eid) <> "' from "
+              <> T.pack opts.inputPath <> ": " <> renderReport report
+
+
+resolveNarrationEid :: Pool -> UUID -> IO (Either String (Maybe (Int64, Text, Text, UTCTime)))
 resolveNarrationEid pool eid = do
   eiRez <- use pool $ HS.statement eid Is.selectNarrationEidStmt
   case eiRez of
@@ -178,113 +180,72 @@ visualCount :: Narration -> Int
 visualCount narration =
   sum [ length dialogue.visuals | dialogue <- narration.dialogues ]
 
+
 --------------------------------------------------------------------------------
 -- Validation
 
 validateNarration :: Narration -> Either [Text] ()
 validateNarration narration =
-  let errs =
-        concat
-          [ validateDialogue dialogueOrd dialogue
-          | (dialogueOrd, dialogue) <- withOrd32 narration.dialogues
-          ]
+  let
+    errs = concat [ validateDialogue dialogueOrd dialogue
+              | (dialogueOrd, dialogue) <- withOrd32 narration.dialogues ]
   in
-    if null errs
-      then Right ()
-      else Left errs
+  if null errs then
+    Right ()
+  else
+    Left errs
 
 validateDialogue :: Int32 -> Dialogue -> [Text]
 validateDialogue dialogueOrd dialogue =
-  let sentenceCount = length dialogue.sentences
+  let
+    sentenceCount = length dialogue.sentences
   in
-    concat
-      [ validateVisual dialogueOrd visualOrd sentenceCount visual
-      | (visualOrd, visual) <- withOrd32 dialogue.visuals
-      ]
+  concat [ validateVisual dialogueOrd visualOrd sentenceCount visual
+      | (visualOrd, visual) <- withOrd32 dialogue.visuals ]
+
 
 validateVisual :: Int32 -> Int32 -> Int -> DialogueVisual -> [Text]
 validateVisual dialogueOrd visualOrd sentenceCount visual =
   case visual.sentenceOrd of
-    Nothing ->
-      []
+    Nothing -> []
     Just ix
-      | ix < 1 ->
-          [ "Dialogue "
-              <> tshow dialogueOrd
-              <> ", visual "
-              <> tshow visualOrd
-              <> " references sentence "
-              <> tshow ix
-              <> ", but sentence references start at 1."
+      | ix < 1 -> [ "Dialogue " <> tshow dialogueOrd <> ", visual " <> tshow visualOrd
+              <> " references sentence " <> tshow ix <> ", but sentence references start at 1."
           ]
-      | fromIntegral ix > sentenceCount ->
-          [ "Dialogue "
-              <> tshow dialogueOrd
-              <> ", visual "
-              <> tshow visualOrd
-              <> " references sentence "
-              <> tshow ix
-              <> ", but the dialogue has only "
-              <> tshow sentenceCount
-              <> " sentence(s)."
+      | fromIntegral ix > sentenceCount -> [ "Dialogue " <> tshow dialogueOrd <> ", visual "
+              <> tshow visualOrd <> " references sentence " <> tshow ix
+              <> ", but the dialogue has only " <> tshow sentenceCount <> " sentence(s)."
           ]
-      | otherwise ->
-          []
+      | otherwise -> []
+
 
 --------------------------------------------------------------------------------
 -- Persistence
 
-persistNarrationTx
-  :: IngestOpts
-  -> UUID
-  -> [UUID]
-  -> [UUID]
-  -> Narration
-  -> HT.Transaction IngestReport
+persistNarrationTx :: IngestOpts -> UUID -> [UUID] -> [UUID] -> Narration -> HT.Transaction IngestReport
 persistNarrationTx opts narrationEid freshDialogueEids freshVisualEids narration = do
-  narrationUid <-
-    HT.statement
-      ( narrationEid
-      , nonBlankMaybe opts.title
-      , opts.language
-      , opts.speaker
-      )
-      Is.upsertNarrationStmt
+  narrationUid <- HT.statement ( narrationEid, nonBlankMaybe opts.title, opts.language, opts.speaker )
+          Is.upsertNarrationStmt
 
-  dialogueRows <-
-    HT.statement
-      narrationUid
-      Is.selectDialogueIdentityRowsStmt
-
-  visualRows <-
-    HT.statement
-      narrationUid
-      Is.selectVisualIdentityRowsStmt
+  dialogueRows <- HT.statement narrationUid Is.selectDialogueIdentityRowsStmt
+  visualRows <- HT.statement narrationUid Is.selectVisualIdentityRowsStmt
 
   plan <-
     case buildInsertPlan narration dialogueRows visualRows freshDialogueEids freshVisualEids of
-      Left err ->
-        fail (T.unpack err)
-      Right ok ->
-        pure ok
-
+      Left err -> fail (T.unpack err)
+      Right ok -> pure ok
   HT.statement narrationUid Is.deleteDialogueTreeStmt
+  foldM (insertDialogueTx narrationUid) emptyReport plan.dialogues
 
-  foldM
-    (insertDialogueTx narrationUid)
-    emptyReport
-    plan.dialogues
 
 --------------------------------------------------------------------------------
 -- Insert plan
 
-data InsertPlan = InsertPlan
-  { dialogues :: [DialogueInsert]
-  }
+newtype InsertPlan = InsertPlan { dialogues :: [DialogueInsert] }
   deriving (Eq, Show)
 
-data DialogueInsert = DialogueInsert
-  { eid :: UUID
+data DialogueInsert = DialogueInsert {
+    eid :: UUID
   , ord :: Int32
   , emotion :: Text
   , fingerprint :: Text
@@ -293,8 +254,8 @@ data DialogueInsert = DialogueInsert
   }
   deriving (Eq, Show)
 
-data VisualInsert = VisualInsert
-  { eid :: UUID
+data VisualInsert = VisualInsert {
+    eid :: UUID
   , ord :: Int32
   , sentenceOrd :: Maybe Int32
   , description :: Text
@@ -302,55 +263,33 @@ data VisualInsert = VisualInsert
   }
   deriving (Eq, Show)
 
-data IdentityState = IdentityState
-  { dialogueByFingerprint :: Mp.Map Text [UUID]
+data IdentityState = IdentityState {
+    dialogueByFingerprint :: Mp.Map Text [UUID]
   , visualByFingerprint :: Mp.Map Text [UUID]
   , freshDialogueEids :: [UUID]
   , freshVisualEids :: [UUID]
   }
   deriving (Eq, Show)
 
-buildInsertPlan
-  :: Narration
-  -> Vc.Vector (Text, UUID, Int32)
-  -> Vc.Vector (Text, UUID, Int32, Maybe Int32)
-  -> [UUID]
-  -> [UUID]
-  -> Either Text InsertPlan
-buildInsertPlan narration dialogueRows visualRows freshDialogueEids freshVisualEids = do
-  let initialState =
-        IdentityState
-          { dialogueByFingerprint =
-              mkIdentityMap
-                [ (fp, eid)
-                | (fp, eid, _oldOrd) <- Vc.toList dialogueRows
-                ]
-          , visualByFingerprint =
-              mkIdentityMap
-                [ (fp, eid)
-                | (fp, eid, _oldOrd, _oldSentenceOrd) <- Vc.toList visualRows
-                ]
-          , freshDialogueEids = freshDialogueEids
-          , freshVisualEids = freshVisualEids
-          }
+buildInsertPlan :: Narration -> Vc.Vector (Text, UUID, Int32) -> Vc.Vector (Text, UUID, Int32, Maybe Int32)
+                  -> [UUID] -> [UUID] -> Either Text InsertPlan
+buildInsertPlan narration dialogueRows visualRows freshDialogueEids freshVisualEids =
+  let
+    initialState = IdentityState { 
+        dialogueByFingerprint = mkIdentityMap [ (fp, eid) | (fp, eid, _oldOrd) <- Vc.toList dialogueRows ]
+      , visualByFingerprint = mkIdentityMap [ (fp, eid) | (fp, eid, _oldOrd, _oldSentenceOrd) <- Vc.toList visualRows ]
+      , freshDialogueEids = freshDialogueEids
+      , freshVisualEids = freshVisualEids
+      }
+  in do
+  (finalState, dialogueInserts) <- foldM buildDialogueInsert (initialState, []) (withOrd32 narration.dialogues)
+  pure InsertPlan { dialogues = dialogueInserts }
 
-  (finalState, dialogueInserts) <-
-    foldM
-      buildDialogueInsert
-      (initialState, [])
-      (withOrd32 narration.dialogues)
-
-  pure InsertPlan
-    { dialogues = dialogueInserts
-    }
 
 mkIdentityMap :: [(Text, UUID)] -> Mp.Map Text [UUID]
 mkIdentityMap pairs =
-  Mp.fromListWith
-    (<>)
-    [ (fp, [eid])
-    | (fp, eid) <- pairs
-    ]
+  Mp.fromListWith (<>) [ (fp, [eid]) | (fp, eid) <- pairs ]
+
 
 buildDialogueInsert
   :: (IdentityState, [DialogueInsert])

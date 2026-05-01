@@ -21,7 +21,7 @@ data CliOptions = CliOptions {
 
 data IngestOpts = IngestOpts
   { inputPath :: FilePath
-  , refID :: IngestIdOpt
+  , refID :: NarrationIdOpt
   , title :: Text
   , language :: Text
   , speaker :: Maybe Text
@@ -30,9 +30,9 @@ data IngestOpts = IngestOpts
   deriving (Eq, Show)
 
 
-data IngestIdOpt =
-  IngestIdEid Text
-  | IngestIdName Text
+data NarrationIdOpt =
+  EidNI Text
+  | NameNI Text
   deriving (Eq, Show)
 
 textOption :: Mod OptionFields String -> Parser Text
@@ -49,10 +49,12 @@ data Command =
   HelpCmd
   | VersionCmd
   | IngestCmd IngestOpts
-  | LaunchCmd LaunchOpts
   | PublishCmd PublishOpts
   | ProduceCmd ProduceOpts
   | WorkCmd WorkOpts
+  | ListCmd ListOpts
+  -- Deprecated:
+  -- | LaunchCmd LaunchOpts
   deriving stock (Show)
 
 newtype LaunchOpts = LaunchOpts { 
@@ -78,6 +80,19 @@ data WorkOpts = WorkOpts {
   , leaseSeconds :: Int32
   }
   deriving (Eq, Show)
+
+data ListOpts = ListOpts { 
+    target :: Maybe NarrationIdOpt
+    , filter :: Maybe FilterSubCmd
+  }
+  deriving (Eq, Show)
+
+
+data FilterSubCmd =
+  DialogueFC
+  | RenderNodeFC (Maybe Text) (Maybe Text)
+  deriving (Eq, Show)
+
 
 parseCliOptions :: IO (Either String CliOptions)
 parseCliOptions =
@@ -142,6 +157,7 @@ commandDefs =
       , ("publish", PublishCmd <$> publishOptsP, "Publishes a render job to a video site.")
       , ("produce", ProduceCmd <$> produceOptsP, "Produces a render job.")
       , ("work", WorkCmd <$> workOptsP, "Works a render job.")
+      , ("list", ListCmd <$> listCmdP, "Lists narrations.")
       -- Deprecated:
       -- , ("launch", LaunchCmd <$> launchOptsP, "Launches a render job.")
       ]
@@ -160,7 +176,7 @@ ingestOptsP =
     <$> strArgument (
           metavar "PATH" <> help "Narration text file to ingest."
         )
-    <*> ingestIdOptsP
+    <*> narrationIdOptsP
     <*> textOption
           (  long "title"
           <> metavar "NARRATION_TITLE"
@@ -186,10 +202,10 @@ ingestOptsP =
           )
 
 
-ingestIdOptsP :: Parser IngestIdOpt
-ingestIdOptsP =
-  IngestIdEid <$> strOption ( long "eid" <> metavar "EID" <> help "EID for the existing narration (update)." )
-  <|> IngestIdName <$> strOption ( long "name" <> metavar "NAME" <> help "Nickname to refer the narration as." )
+narrationIdOptsP :: Parser NarrationIdOpt
+narrationIdOptsP =
+  EidNI <$> strOption ( long "eid" <> metavar "EID" <> help "EID for the existing narration (update)." )
+  <|> NameNI <$> strOption ( long "name" <> metavar "NAME" <> help "Nickname to refer the narration as." )
   
 
 launchOptsP :: Parser LaunchOpts
@@ -212,3 +228,20 @@ workOptsP =
     <*> switch ( long "has-gpu" <> help "Whether the worker has a GPU." )
     <*> optional ( option auto ( long "vram-mb" <> metavar "VRAM-MB" <> help "Amount of VRAM in MB." ) )
     <*> option auto ( long "lease-seconds" <> metavar "LEASE-SECONDS" <> help "Lease seconds." )
+
+listCmdP :: Parser ListOpts
+listCmdP =
+  ListOpts
+    <$> optional narrationIdOptsP
+    <*> optional ( subparser (
+          command "dialogues" ( info (helper <*> pure DialogueFC) (progDesc "Filter by dialogue.") )
+          <> command "rnode" ( info (helper <*> renderNodeFilterP) (progDesc "Filter by render node.") )
+        )
+      )
+
+
+renderNodeFilterP :: Parser FilterSubCmd
+renderNodeFilterP =
+  RenderNodeFC
+    <$> optional ( strOption ( long "lane" <> metavar "LANE" <> help "Lane." ) )
+    <*> optional ( strOption ( long "status" <> metavar "STATUS" <> help "Status." ) )

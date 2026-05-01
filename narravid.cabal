@@ -34,6 +34,7 @@ library
       Commands.Help
       Commands.Ingest
       Commands.Launch
+      Commands.List
       Commands.Produce
       Commands.Publish
       Commands.Version
@@ -44,6 +45,7 @@ library
       DB.LaunchOps
       DB.LaunchStmt
       DB.LeaseStmt
+      DB.ListStmt
       DB.Opers
       DB.ProducerStmt
       DB.TaskStmt

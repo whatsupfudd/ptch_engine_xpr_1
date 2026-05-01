@@ -62,11 +62,11 @@ selectNarrationUidStmt =
   |]
 
 
-selectNarrationEidStmt :: Statement UUID (Maybe (Int64, Text, UTCTime))
+selectNarrationEidStmt :: Statement UUID (Maybe (Int64, Text, Text, UTCTime))
 selectNarrationEidStmt =
   [TH.maybeStatement|
     select
-      n.uid::int8, n.title::text, n.created_at::timestamptz
+      n.uid::int8, n.nickname::text, n.title::text, n.created_at::timestamptz
     from prod.narration n
     where n.eid = $1::uuid
   |]
