@@ -34,8 +34,8 @@ launchCmd lOpts rtOpts = do
               , ttsVoice = Just ttsSpeaker
               , imageFunctionEid = imageFunctionEid
               , imageModel = rtOpts.aiConf.imageModel
-              , imagePromptPrefix = "This is a storyboard sketch inspired by Aurélie Charbonnier that aims to build the key cinematographic and design details of the scene. The visuals for the scene are described as: "
-              , imagePromptPostfix = " . The image is a portrait format, it is only the sketch and has no annotations or descriptions about the storyboard scene details, low resolution and uses a crayon drawing style."
+              -- , imagePromptPrefix = "This is a storyboard sketch inspired by Aurélie Charbonnier that aims to build the key cinematographic and design details of the scene. The visuals for the scene are described as: "
+              -- , imagePromptPostfix = " . The image is a portrait format, it is only the sketch and has no annotations or descriptions about the storyboard scene details, low resolution and uses a crayon drawing style."
             }
             env = RenderEnv {
                 aiCfg = aiCfg

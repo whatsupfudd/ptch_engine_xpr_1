@@ -33,7 +33,8 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as Te
 import Data.UUID (UUID)
 import qualified Data.UUID as Uu
-import qualified Data.Vector as Vc
+import Data.Vector (Vector)
+import qualified Data.Vector as V
 
 import System.Directory (getFileSize)
 import System.Exit (ExitCode(..))
@@ -332,10 +333,13 @@ runImageNode env node = do
             fatalFailure ("Image node visual source not found: " <> Uu.toText visualEid)
 
         Just description -> do
+          (prefixes, postfixes) <- loadVizContextsByVisualEid env.pool visualEid
           aiClient <- loginAiServer env.ai
 
           let
-            fullPrompt = env.ai.imagePromptPrefix <> description <> env.ai.imagePromptPostfix
+            prefix = if V.null prefixes then "" else snd (V.head prefixes)
+            postfix = if V.null postfixes then "" else snd (V.head postfixes)
+            fullPrompt = prefix <> description <> postfix
             params = Ae.object ["model" .= env.ai.imageModel]
 
           invokeRes <- try $ invokeForAsset aiClient env.ai.imageFunctionEid params (Ae.toJSON fullPrompt)
@@ -770,13 +774,13 @@ loadDialogueSentencesByEid :: Pool -> UUID -> IO [Text]
 loadDialogueSentencesByEid pool dialogueEid = do
   rows <- runSessionOrThrow "selectDialogueSentenceBodiesByEidStmt" pool $
       statement dialogueEid Ts.selectDialogueSentenceBodiesByEidStmt
-  pure [ body | (_ord, body) <- Vc.toList rows ]
+  pure [ body | (_ord, body) <- V.toList rows ]
 
 loadDialogueVisualSentenceAnchorsByDialogueEid :: Pool -> UUID -> IO [Maybe Int32]
 loadDialogueVisualSentenceAnchorsByDialogueEid pool dialogueEid = do
   rows <- runSessionOrThrow "selectDialogueVisualAnchorsByDialogueEidStmt" pool $
       statement dialogueEid Ts.selectDialogueVisualAnchorsByDialogueEidStmt
-  pure [ sentenceIx | (_ord, sentenceIx) <- Vc.toList rows ]
+  pure [ sentenceIx | (_ord, sentenceIx) <- V.toList rows ]
 
 
 loadVisualDescriptionByEid :: Pool -> UUID -> IO (Maybe Text)
@@ -790,6 +794,14 @@ loadVisualOwnerAndAnchorByEid pool visualEid =
   runSessionOrThrow "selectVisualOwnerAndAnchorByEidStmt" pool $
       statement visualEid Ts.selectVisualOwnerAndAnchorByEidStmt
 
+loadVizContextsByVisualEid :: Pool -> UUID -> IO (Vector (Int32, Text), Vector (Int32, Text))
+loadVizContextsByVisualEid pool visualEid = do
+  rows <- runSessionOrThrow "selectVizContextsByVisualEidStmt" pool $
+      statement visualEid Ts.selectVizContextsByVisualEid
+  let
+    prefixes = V.map (\(kind, seqnum, content) -> (seqnum, content)) $ V.filter (\(kind, _, _) -> kind == "prefix") rows
+    postfixes = V.map (\(kind, seqnum, content) -> (seqnum, content)) $ V.filter (\(kind, _, _) -> kind == "postfix") rows
+  pure (prefixes, postfixes)
 
 --------------------------------------------------------------------------------
 -- Shot planning

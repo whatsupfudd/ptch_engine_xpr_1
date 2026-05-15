@@ -362,3 +362,13 @@ before update on prod.render_artifact
 for each row
 execute function prod.touch_updated_at();
 
+-- Prefix/postfix for visuals in a narration:
+create table if not exists prod.vizcontext (
+  uid bigint generated always as identity primary key
+  , narration_fk bigint not null references prod.narration(uid) on delete cascade
+  , kind text not null check (kind in ('prefix', 'postfix'))
+  , seqnum int not null
+  , content text not null
+);
+
+create index if not exists pitcher_vizcontext_narration_idx on prod.vizcontext (narration_fk);

@@ -1,24 +1,13 @@
 {-# LANGUAGE QuasiQuotes #-}
 
-module DB.ProducerStmt
-  ( selectNarrationUidStmt
-  , createRenderJobStmt
-  , markPreviousJobsSupersededStmt
-  , insertRenderNodeStmt
-  , insertRenderInputStmt
-  , markReusableNodesDoneStmt
-  , promoteReadyNodesStmt
-  , recycleExpiredLeasesStmt
-  , finalizeRenderJobStmt
-  , tryAdvisoryJobLockStmt
-  , selectOpenRenderJobStmt
-  , selectFinalAssetStmt
-  ) where
+module DB.ProducerStmt where
 
 import qualified Data.Aeson as Ae
 import Data.Int (Int32, Int64)
 import Data.Text (Text)
 import Data.UUID (UUID)
+import Data.Vector (Vector)
+
 import Hasql.Statement (Statement)
 import qualified Hasql.TH as TH
 
@@ -32,6 +21,16 @@ selectNarrationUidStmt =
     from prod.narration n
     where n.eid = $1::uuid
     limit 1
+  |]
+
+selectVizContextsStmt :: Statement Int64 (Vector (Text, Int32, Text))
+selectVizContextsStmt =
+  [TH.vectorStatement|
+    select
+      vc.kind::text, vc.seqnum::int4, vc.content::text
+    from prod.vizcontext vc
+    where vc.narration_fk = $1::int8
+    order by vc.kind asc, vc.seqnum asc
   |]
 
 --------------------------------------------------------------------------------

@@ -4,7 +4,7 @@ module DB.TaskStmt where
 import Data.Int (Int32, Int64)
 import Data.Text (Text)
 import Data.UUID (UUID)
-import qualified Data.Vector as Vc
+import Data.Vector (Vector)
 
 import qualified Data.Aeson as Ae
 
@@ -25,7 +25,7 @@ selectInputAssetStmt =
     limit 1
   |]
 
-selectDialogueSentenceBodiesStmt :: Statement Int64 (Vc.Vector (Int32, Text))
+selectDialogueSentenceBodiesStmt :: Statement Int64 (Vector (Int32, Text))
 selectDialogueSentenceBodiesStmt =
   [TH.vectorStatement|
     select s.ord::int4, s.body::text
@@ -34,7 +34,7 @@ selectDialogueSentenceBodiesStmt =
     order by s.ord asc
   |]
 
-selectDialogueVisualAnchorsStmt :: Statement Int64 (Vc.Vector (Int32, Maybe Int32))
+selectDialogueVisualAnchorsStmt :: Statement Int64 (Vector (Int32, Maybe Int32))
 selectDialogueVisualAnchorsStmt =
   [TH.vectorStatement|
     select v.ord::int4, v.sentence_ord::int4?
@@ -54,7 +54,7 @@ insertAssetStmt =
   |]
 
 
-selectDialogueSentenceBodiesByEidStmt :: Statement UUID (Vc.Vector (Int32, Text))
+selectDialogueSentenceBodiesByEidStmt :: Statement UUID (Vector (Int32, Text))
 selectDialogueSentenceBodiesByEidStmt =
   [TH.vectorStatement|
     select
@@ -66,7 +66,7 @@ selectDialogueSentenceBodiesByEidStmt =
     order by s.ord asc
   |]
 
-selectDialogueVisualAnchorsByDialogueEidStmt :: Statement UUID (Vc.Vector (Int32, Maybe Int32))
+selectDialogueVisualAnchorsByDialogueEidStmt :: Statement UUID (Vector (Int32, Maybe Int32))
 selectDialogueVisualAnchorsByDialogueEidStmt =
   [TH.vectorStatement|
     select
@@ -85,6 +85,17 @@ selectVisualDescriptionByEidStmt =
     from prod.dialogue_visual v
     where v.eid = $1::uuid
     limit 1
+  |]
+
+
+selectVizContextsByVisualEid :: Statement UUID (Vector (Text, Int32, Text))
+selectVizContextsByVisualEid =
+  [TH.vectorStatement|
+    select
+      vc.kind::text, vc.seqnum::int4, vc.content::text
+    from prod.vizcontext vc
+    where vc.visual_fk = $1::uuid
+    order by vc.kind asc, vc.seqnum asc
   |]
 
 

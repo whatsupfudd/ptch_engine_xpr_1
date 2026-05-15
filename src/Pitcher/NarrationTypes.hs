@@ -5,6 +5,7 @@ import Data.Int (Int32, Int64)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.UUID (UUID)
+import Data.Vector (Vector)
 
 import GHC.Generics (Generic)
 
@@ -13,6 +14,7 @@ data NarrationRender = NarrationRender
   { narrationUid :: Int64
   , eid :: UUID
   , dialogues :: [DialogueRender]
+  , vizContexts :: (Vector (Int32, Text), Vector (Int32, Text))
   }
   deriving (Eq, Show, Generic)
 

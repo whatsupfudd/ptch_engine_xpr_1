@@ -142,8 +142,7 @@ launchProducer cfg pool narrationEid = do
 
   narration <- Lo.loadNarrationRender pool (narrationUid, narrationEid)
 
-  when (null narration.dialogues) $
-    throwIO . userError $ "@[launchProducer] narration has no dialogues."
+  when (null narration.dialogues) $ throwIO . userError $ "@[launchProducer] narration has no dialogues."
 
   jobUid <- runSessionOrThrow "createRenderJobStmt" pool $ statement narrationUid Ps.createRenderJobStmt
   _ <- runSessionOrThrow "markPreviousJobsSupersededStmt" pool $ statement jobUid Ps.markPreviousJobsSupersededStmt
@@ -195,78 +194,63 @@ buildRenderGraph cfg narration =
     finalNode =
       mkFinalNodeFromSections cfg narration sections
   in
-  RenderGraph
-    { narrationUid = narration.narrationUid
-    , narrationEid = narration.eid
-    , nodes = audioNodes <> imageNodes <> segmentNodes <> [finalNode]
-    }
+  RenderGraph {
+    narrationUid = narration.narrationUid
+  , narrationEid = narration.eid
+  , nodes = audioNodes <> imageNodes <> segmentNodes <> [finalNode]
+  }
+
 
 buildRenderSections :: ProducerCfg -> [DialogueRender] -> [RenderSection]
 buildRenderSections cfg dialogues =
-  finalizeSections cfg.trailingDialoguePolicy $
-    foldl step initialState dialogues
+  finalizeSections cfg.trailingDialoguePolicy $ foldl step initialState dialogues
   where
-    initialState =
-      ( []  -- completed sections, reversed
-      , []  -- pending dialogues, reversed
-      , Nothing :: Maybe RenderSection
-      )
+  initialState =
+      -- first array: completed sections, reversed
+      -- second array: pending dialogues, reversed
+    ([], [], Nothing :: Maybe RenderSection)
 
-    step (doneRev, pendingRev, lastSection) dlg
-      | null dlg.visuals =
-          (doneRev, dlg : pendingRev, lastSection)
+  step (doneRev, pendingRev, lastSection) dlg
+    | null dlg.visuals =
+        (doneRev, dlg : pendingRev, lastSection)
 
-      | otherwise =
-          let
-            section =
+    | otherwise =
+        let
+          section =
+            RenderSection
+              { sectionOrd = length doneRev + 1
+              , dialogues = reverse (dlg : pendingRev)
+              , visualOwner = Just dlg
+              , visuals = dlg.visuals
+              }
+        in
+        (section : doneRev, [], Just section)
+
+  finalizeSections policy (doneRev, pendingRev, lastSection) =
+    let
+      done = reverse doneRev
+      pending = reverse pendingRev
+    in
+    case pending of
+      [] -> done
+      _ -> case policy of
+        RenderTrailingAsAudioOnlySection -> done <> [
               RenderSection
-                { sectionOrd = length doneRev + 1
-                , dialogues = reverse (dlg : pendingRev)
-                , visualOwner = Just dlg
-                , visuals = dlg.visuals
+                { sectionOrd = length done + 1
+                , dialogues = pending
+                , visualOwner = Nothing
+                , visuals = []
                 }
-          in
-          (section : doneRev, [], Just section)
-
-    finalizeSections policy (doneRev, pendingRev, lastSection) =
-      let
-        done = reverse doneRev
-        pending = reverse pendingRev
-      in
-      case pending of
-        [] ->
-          done
-
-        _ ->
-          case policy of
-            RenderTrailingAsAudioOnlySection ->
-              done <>
-                [ RenderSection
-                    { sectionOrd = length done + 1
-                    , dialogues = pending
-                    , visualOwner = Nothing
-                    , visuals = []
-                    }
-                ]
-
-            AttachTrailingToPreviousSection ->
-              case reverse done of
-                [] ->
-                  -- No visual-bearing dialogue exists at all.
-                  -- Fall back to one audio-only section.
-                  [ RenderSection
-                      { sectionOrd = 1
-                      , dialogues = pending
-                      , visualOwner = Nothing
-                      , visuals = []
-                      }
-                  ]
-
-                lastSec : priorRev ->
-                  let
-                    updatedLast = (lastSec :: RenderSection) { dialogues = lastSec.dialogues <> pending }
-                  in
-                  reverse priorRev <> [updatedLast]
+            ]
+        AttachTrailingToPreviousSection -> case reverse done of
+              -- No visual-bearing dialogue exists at all.
+              -- Fall back to one audio-only section.
+            [] -> [ RenderSection { sectionOrd = 1, dialogues = pending, visualOwner = Nothing, visuals = [] } ]
+            lastSec : priorRev ->
+              let
+                updatedLast = (lastSec :: RenderSection) { dialogues = lastSec.dialogues <> pending }
+              in
+              reverse priorRev <> [updatedLast]
 
 
 mkSectionSegmentNode :: ProducerCfg -> RenderSection -> RenderNodeSpec
@@ -331,14 +315,13 @@ mkSectionSegmentNode cfg section =
     , ord = section.sectionOrd
     , sourceKind = Nothing
     , sourceEid = Nothing
-    , params =
-        Ae.object
-          [ "segmentPolicyTag" .= cfg.segmentPolicyTag
-          , "renderVersionTag" .= cfg.renderVersionTag
-          , "sectionOrd" .= section.sectionOrd
-          , "dialogueEids" .= map (.eid) section.dialogues
-          , "visualEids" .= map (.eid) section.visuals
-          ]
+    , params = Ae.object [
+          "segmentPolicyTag" .= cfg.segmentPolicyTag
+        , "renderVersionTag" .= cfg.renderVersionTag
+        , "sectionOrd" .= section.sectionOrd
+        , "dialogueEids" .= map (.eid) section.dialogues
+        , "visualEids" .= map (.eid) section.visuals
+        ]
     , artifactKind = "segment"
     , inputs = allInputs
     , maxAttempts = cfg.defaultMaxAttempts

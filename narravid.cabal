@@ -46,7 +46,6 @@ library
       DB.LaunchStmt
       DB.LeaseStmt
       DB.ListStmt
-      DB.Opers
       DB.ProducerStmt
       DB.TaskStmt
       HttpSup.CorsPolicy

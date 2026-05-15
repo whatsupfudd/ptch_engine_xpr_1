@@ -75,7 +75,7 @@ data AiRunnerCfg = AiRunnerCfg
   , ttsVoice :: Maybe Text
   , imageFunctionEid :: UUID
   , imageModel :: Text
-  , imagePromptPrefix :: Text
-  , imagePromptPostfix :: Text
+  -- , imagePromptPrefix :: Text
+  -- , imagePromptPostfix :: Text
   }
   deriving (Show)

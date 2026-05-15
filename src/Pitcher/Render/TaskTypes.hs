@@ -51,35 +51,35 @@ data PersistedRenderState = PersistedRenderState
   deriving (Eq, Show, Generic, Ae.ToJSON, Ae.FromJSON)
 
 -- V2:
-data AudioTask = AudioTask
-  { dialogue :: DialogueRender
+data AudioTask = AudioTask {
+    dialogue :: DialogueRender
   , sourceSig :: Text
   }
   deriving (Eq, Show)
 
-data ImageTask = ImageTask
-  { dialogue :: DialogueRender
+data ImageTask = ImageTask { 
+    dialogue :: DialogueRender
   , visual :: VisualRender
   , sourceSig :: Text
   }
   deriving (Eq, Show)
 
-data SegmentTask = SegmentTask
-  { dialogue :: DialogueRender
+data SegmentTask = SegmentTask {
+    dialogue :: DialogueRender
   , audioKey :: Text
   , imageKeys :: [Text]
   , sourceSig :: Text
   }
   deriving (Eq, Show)
 
-data FinalTask = FinalTask
-  { segmentKeys :: [Text]
+data FinalTask = FinalTask {
+    segmentKeys :: [Text]
   , sourceSig :: Text
   }
   deriving (Eq, Show)
 
-data RenderPlan = RenderPlan
-  { narration :: NarrationRender
+data RenderPlan = RenderPlan {
+    narration :: NarrationRender
   , audioTasks :: Map Text AudioTask
   , imageTasks :: Map Text ImageTask
   , segmentTasks :: Map Text SegmentTask

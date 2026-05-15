@@ -46,6 +46,7 @@ import Data.Time.Clock (UTCTime)
 import Data.UUID (UUID)
 import qualified Data.UUID as Uu
 import qualified Data.UUID.V4 as Uu4
+import Data.Vector (Vector)
 import qualified Data.Vector as Vc
 
 import System.Directory
@@ -121,100 +122,88 @@ lookupTask key st = Mp.lookup key (stateToMap st)
 
 buildRenderPlan :: RenderEnv -> NarrationRender -> RenderPlan
 buildRenderPlan env narration =
-  let audioPairs =
-        [ (audioTaskKey dlg, AudioTask dlg (audioSourceSig env dlg))
-        | dlg <- narration.dialogues
-        ]
-      imagePairs =
-        [ (imageTaskKey dlg vis, ImageTask dlg vis (imageSourceSig env dlg vis))
-        | dlg <- narration.dialogues
-        , vis <- dlg.visuals
-        ]
-      segmentPairs =
-        [ ( segmentTaskKey dlg
-          , SegmentTask
-              { dialogue = dlg
-              , audioKey = audioTaskKey dlg
-              , imageKeys = [ imageTaskKey dlg vis | vis <- dlg.visuals ]
-              , sourceSig = segmentSourceSig env dlg
-              }
-          )
-        | dlg <- narration.dialogues
-        ]
-      finalT =
-        FinalTask
-          { segmentKeys = [ segmentTaskKey dlg | dlg <- narration.dialogues ]
+  let
+    audioPairs = [
+        (audioTaskKey dlg, AudioTask dlg (audioSourceSig env dlg)) | dlg <- narration.dialogues
+      ]
+    imagePairs = [
+        (imageTaskKey dlg vis, ImageTask dlg vis (imageSourceSig env dlg vis narration.vizContexts))
+        | dlg <- narration.dialogues, vis <- dlg.visuals
+      ]
+    segmentPairs = [
+        ( segmentTaskKey dlg, SegmentTask {
+            dialogue = dlg
+          , audioKey = audioTaskKey dlg
+          , imageKeys = [ imageTaskKey dlg vis | vis <- dlg.visuals ]
+          , sourceSig = segmentSourceSig env dlg narration.vizContexts
+          }
+        ) | dlg <- narration.dialogues
+      ]
+    finalT = FinalTask { 
+            segmentKeys = [ segmentTaskKey dlg | dlg <- narration.dialogues ]
           , sourceSig = finalSourceSig env narration
           }
-  in RenderPlan
-      { narration = narration
-      , audioTasks = Mp.fromList audioPairs
-      , imageTasks = Mp.fromList imagePairs
-      , segmentTasks = Mp.fromList segmentPairs
-      , finalTask = finalT
-      }
+  in
+  RenderPlan { 
+      narration = narration
+    , audioTasks = Mp.fromList audioPairs
+    , imageTasks = Mp.fromList imagePairs
+    , segmentTasks = Mp.fromList segmentPairs
+    , finalTask = finalT
+    }
+
 
 audioSourceSig :: RenderEnv -> DialogueRender -> Text
-audioSourceSig env dlg =
-  sigText $
-    Ae.object
-      [ "v" .= env.renderVersionTag
-      , "stage" .= ("audio" :: Text)
-      , "ttsFunctionEid" .= Uu.toText env.aiCfg.ttsFunctionEid
-      , "voice" .= env.aiCfg.ttsVoice
-      , "dialogueUid" .= dlg.uid
-      , "emotion" .= dlg.emotion
-      , "spokenText" .= dialogueSpokenText dlg
-      ]
+audioSourceSig env dlg = sigText $ Ae.object [
+    "v" .= env.renderVersionTag
+  , "stage" .= ("audio" :: Text)
+  , "ttsFunctionEid" .= Uu.toText env.aiCfg.ttsFunctionEid
+  , "voice" .= env.aiCfg.ttsVoice
+  , "dialogueUid" .= dlg.uid
+  , "emotion" .= dlg.emotion
+  , "spokenText" .= dialogueSpokenText dlg
+  ]
 
-imageSourceSig :: RenderEnv -> DialogueRender -> VisualRender -> Text
-imageSourceSig env dlg vis =
-  sigText $
-    Ae.object
-      [ "v" .= env.renderVersionTag
-      , "stage" .= ("image" :: Text)
-      , "imageFunctionEid" .= Uu.toText env.aiCfg.imageFunctionEid
-      , "dialogueUid" .= dlg.uid
-      , "visualOrd" .= vis.ord
-      , "sentenceIx" .= vis.sentenceIx
-      , "description" .= vis.description
-      , "promptPrefix" .= env.aiCfg.imagePromptPrefix
-      , "promptPostfix" .= env.aiCfg.imagePromptPostfix
-      ]
 
-segmentSourceSig :: RenderEnv -> DialogueRender -> Text
-segmentSourceSig env dlg =
-  sigText $
-    Ae.object
-      [ "v" .= env.renderVersionTag
-      , "stage" .= ("segment" :: Text)
-      , "dialogueUid" .= dlg.uid
-      , "audioSourceSig" .= audioSourceSig env dlg
-      , "imageSourceSigs" .=
-          [ imageSourceSig env dlg vis
-          | vis <- dlg.visuals
-          ]
-      , "width" .= env.widthPx
-      , "height" .= env.heightPx
-      , "fps" .= env.fps
-      ]
+imageSourceSig :: RenderEnv -> DialogueRender -> VisualRender -> (Vector (Int32, Text), Vector (Int32, Text)) -> Text
+imageSourceSig env dlg vis (prefixes, postfixes) = sigText $ Ae.object [ 
+    "v" .= env.renderVersionTag
+  , "stage" .= ("image" :: Text)
+  , "imageFunctionEid" .= Uu.toText env.aiCfg.imageFunctionEid
+  , "dialogueUid" .= dlg.uid
+  , "visualOrd" .= vis.ord
+  , "sentenceIx" .= vis.sentenceIx
+  , "description" .= vis.description
+  , "promptPrefix" .= (snd . Vc.head $ prefixes)
+  , "promptPostfix" .= (snd . Vc.head $ postfixes)
+  ]
+
+
+segmentSourceSig :: RenderEnv -> DialogueRender -> (Vector (Int32, Text), Vector (Int32, Text)) -> Text
+segmentSourceSig env dlg vizCtxt = sigText $ Ae.object [
+    "v" .= env.renderVersionTag
+  , "stage" .= ("segment" :: Text)
+  , "dialogueUid" .= dlg.uid
+  , "audioSourceSig" .= audioSourceSig env dlg
+  , "imageSourceSigs" .= [ imageSourceSig env dlg vis vizCtxt | vis <- dlg.visuals ]
+  , "width" .= env.widthPx
+  , "height" .= env.heightPx
+  , "fps" .= env.fps
+  ]
+
 
 finalSourceSig :: RenderEnv -> NarrationRender -> Text
-finalSourceSig env narration =
-  sigText $
-    Ae.object
-      [ "v" .= env.renderVersionTag
-      , "stage" .= ("final" :: Text)
-      , "segmentSourceSigs" .=
-          [ segmentSourceSig env dlg
-          | dlg <- narration.dialogues
-          ]
-      , "width" .= env.widthPx
-      , "height" .= env.heightPx
-      , "fps" .= env.fps
-      , "gapDurationSeconds" .= env.gapDurationSeconds
-      , "fadeDurationSeconds" .= env.fadeDurationSeconds
-      ]
+finalSourceSig env narration = sigText $ Ae.object [
+    "v" .= env.renderVersionTag
+  , "stage" .= ("final" :: Text)
+  , "segmentSourceSigs" .= [ segmentSourceSig env dlg narration.vizContexts | dlg <- narration.dialogues ]
+  , "width" .= env.widthPx
+  , "height" .= env.heightPx
+  , "fps" .= env.fps
+  , "gapDurationSeconds" .= env.gapDurationSeconds
+  , "fadeDurationSeconds" .= env.fadeDurationSeconds
+  ]
+
 
 --------------------------------------------------------------------------------
 -- Runtime
@@ -482,10 +471,12 @@ audioWorkerLoop env pool rt =
       Right assetRef ->
         setTaskDone pool rt key assetRef Nothing
 
+
 imageWorkerLoop :: RenderEnv -> Pool -> RenderRuntime -> IO ()
 imageWorkerLoop env pool rt =
   workerLoop rt.stopVar rt.imageQ $ \task -> do
-    let key = imageTaskKey task.dialogue task.visual
+    let
+      key = imageTaskKey task.dialogue task.visual
     setTaskRunning pool rt key
     aiClient <- Ai.loginAiServer env.aiCfg
     res <- try $ renderImageTask env pool aiClient task :: IO (Either SomeException At.AssetRef)
@@ -494,6 +485,7 @@ imageWorkerLoop env pool rt =
         setTaskFailed pool rt key (T.pack $ show ex)
       Right assetRef ->
         setTaskDone pool rt key assetRef Nothing
+
 
 segmentWorkerLoop :: RenderEnv -> Pool -> RenderRuntime -> IO ()
 segmentWorkerLoop env pool rt =
@@ -596,89 +588,59 @@ renderAudioTask env pool aiClient task =
 renderImageTask :: RenderEnv -> Pool -> AiClient -> ImageTask -> IO At.AssetRef
 renderImageTask env pool aiClient task = do
   let
-    prompt = env.aiCfg.imagePromptPrefix <> task.visual.description <> env.aiCfg.imagePromptPostfix
+    -- prompt = env.aiCfg.imagePromptPrefix <> task.visual.description <> env.aiCfg.imagePromptPostfix
+    prompt = task.visual.description
     params = Ae.object [ "model" .= env.aiCfg.imageModel ]
 
   (reqEid, remoteAssetEid) <- Ai.invokeForAsset aiClient env.aiCfg.imageFunctionEid params (Ae.toJSON prompt)
   localAsset <- copyRemoteAssetIntoLocalStore env.s3Conn pool aiClient remoteAssetEid ("pitcher-image-" <> tshow task.dialogue.uid <> "-" <> tshow task.visual.ord <> ".png") "pitcher:image"
 
-  Lo.writeArtifactRecord
-    pool
-    0
-    "image"
-    (Just task.dialogue.uid)
-    (Just task.visual.ord)
-    task.sourceSig
-    "done"
-    (Just localAsset.uid)
-    (Just localAsset.eid)
-    (Just reqEid)
-    (Just $ "remoteAsset=" <> Uu.toText remoteAssetEid)
+  Lo.writeArtifactRecord pool 0 "image" (Just task.dialogue.uid) (Just task.visual.ord)
+        task.sourceSig "done" (Just localAsset.uid) (Just localAsset.eid)
+        (Just reqEid) (Just $ "remoteAsset=" <> Uu.toText remoteAssetEid)
 
   pure localAsset
 
 renderSegmentTask :: RenderEnv -> Pool -> RenderRuntime -> SegmentTask -> IO At.AssetRef
 renderSegmentTask env pool rt task = do
   st <- readTVarIO rt.stateVar
-  let audioEid =
-        fromMaybe
-          (error "Missing audio asset eid for segment task")
-          (lookupTask task.audioKey st >>= (.assetEid))
-
-      imageEids =
-        [ eid
-        | key <- task.imageKeys
-        , eid <- maybeToList (lookupTask key st >>= (.assetEid))
-        ]
+  let
+    audioEid = fromMaybe (error "Missing audio asset eid for segment task") (lookupTask task.audioKey st >>= (.assetEid))
+    imageEids = [ eid | key <- task.imageKeys , eid <- maybeToList (lookupTask key st >>= (.assetEid)) ]
 
   withSystemTempDirectory "pitcher-render-segment" $ \tmpDir -> do
-    let audioPath = tmpDir </> "dialogue.mp3"
-        outPath = tmpDir </> "segment.mp4"
+    let
+      audioPath = tmpDir </> "dialogue.mp3"
+      outPath = tmpDir </> "segment.mp4"
 
     At.downloadAssetToPath env.s3Conn audioEid audioPath
     forM_ (zip [(1 :: Int) ..] imageEids) $ \(ix, eid) ->
       At.downloadAssetToPath env.s3Conn eid (tmpDir </> ("img_" <> show ix <> ".png"))
 
     audioDuration <- probeDurationSeconds env.ffprobeBin audioPath
-    let imagePaths =
-          [ tmpDir </> ("img_" <> show ix <> ".png")
-          | ix <- [1 .. length imageEids]
-          ]
+    let
+      imagePaths = [ tmpDir </> ("img_" <> show ix <> ".png") | ix <- [1 .. length imageEids] ]
 
     case imagePaths of
-      [] ->
-        renderAudioOnlySegment env audioPath audioDuration outPath
-      _ -> do
-        let shotPlan = buildShotPlan task.dialogue imagePaths audioDuration
+      [] -> renderAudioOnlySegment env audioPath audioDuration outPath
+      _ ->
+        let
+          shotPlan = buildShotPlan task.dialogue imagePaths audioDuration
+        in do
         stillClips <- forM (zip [(1 :: Int) ..] shotPlan) $ \(ix, (imgPath, dur)) -> do
           let clipPath = tmpDir </> ("still_" <> show ix <> ".mp4")
           createStillClip env imgPath dur clipPath
           pure clipPath
         concatStillClipsWithAudio env stillClips audioPath outPath
 
-    assetRef <-
-      As.uploadFileAsAsset
-        pool
-        env.s3Conn
-        outPath
-        ("segment-" <> tshow task.dialogue.uid <> ".mp4")
-        "video/mp4"
-        "pitcher:segment"
+    assetRef <- As.uploadFileAsAsset pool env.s3Conn outPath
+            ("segment-" <> tshow task.dialogue.uid <> ".mp4") "video/mp4" "pitcher:segment"
 
-    Lo.writeArtifactRecord
-      pool
-      rt.jobUid
-      "segment"
-      (Just task.dialogue.uid)
-      Nothing
-      task.sourceSig
-      "done"
-      (Just assetRef.uid)
-      (Just assetRef.eid)
-      Nothing
-      Nothing
+    Lo.writeArtifactRecord pool rt.jobUid "segment" (Just task.dialogue.uid) Nothing
+          task.sourceSig "done" (Just assetRef.uid) (Just assetRef.eid) Nothing Nothing
 
     pure assetRef
+
 
 renderFinalTask :: RenderEnv -> Pool -> RenderRuntime -> FinalTask -> IO At.AssetRef
 renderFinalTask env pool rt task =
