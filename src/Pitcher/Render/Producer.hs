@@ -51,7 +51,7 @@ import DB.Helpers ( runSessionOrThrow, runTx )
 import qualified DB.ProducerStmt as Ps
 import Pitcher.NarrationTypes ( DialogueRender(..), NarrationRender(..), VisualRender(..) )
 import Pitcher.Render.GraphTypes ( NodeLane(..), NodeExec(..), SourceKind(..), InputKind(..), nodeLaneToText, nodeExecToText, sourceKindToText, inputKindToText )
-import qualified DB.LaunchOps as Lo
+import qualified DB.ProducerOps as Po
 
 
 --------------------------------------------------------------------------------
@@ -140,7 +140,7 @@ launchProducer cfg pool narrationEid = do
       Just uid ->
         pure uid
 
-  narration <- Lo.loadNarrationRender pool (narrationUid, narrationEid)
+  narration <- Po.loadNarrationRender pool (narrationUid, narrationEid)
 
   when (null narration.dialogues) $ throwIO . userError $ "@[launchProducer] narration has no dialogues."
 

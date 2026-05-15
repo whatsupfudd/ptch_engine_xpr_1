@@ -14,7 +14,7 @@ import Hasql.Pool (Pool)
 
 import Assets.Types (S3Conn, AssetRef (..))
 import Assets.S3Ops (putBytesObject, putFileObject)
-import DB.LaunchOps (insertAssetRow)
+import DB.ProducerOps (insertAssetRow)
 
 
 insertBytesAsAsset :: Pool -> S3Conn -> Text -> Text -> Text -> Bs.ByteString -> IO AssetRef

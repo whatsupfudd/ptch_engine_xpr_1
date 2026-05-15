@@ -390,3 +390,47 @@ selectFinalAssetStmt =
       and rj.status = 'completed'
     limit 1
   |]
+
+-- Used to be in LaunchStmt:
+selectDialoguesStmt :: Statement Int64 (Vector (Int64, UUID, Int32, Text))
+selectDialoguesStmt =
+  [TH.vectorStatement|
+    select d.uid::int8, d.eid::uuid, d.ord::int4, d.emotion::text
+    from prod.dialogue d
+    where d.narration_fk = $1::int8
+    order by d.ord asc
+  |]
+
+-- From NarrationID:
+selectSentencesStmt :: Statement Int64 (Vector (Int64, Int32, Text))
+selectSentencesStmt =
+  [TH.vectorStatement|
+    select s.dialogue_fk::int8, s.ord::int4, s.body::text
+    from prod.dialogue_sentence s
+    join prod.dialogue d on d.uid = s.dialogue_fk
+    where d.narration_fk = $1::int8
+    order by s.dialogue_fk asc, s.ord asc
+  |]
+
+
+selectVisualsStmt :: Statement Int64 (Vector (Int64, Int64, UUID, Maybe Int32, Text))
+selectVisualsStmt =
+  [TH.vectorStatement|
+    select
+      v.uid::int8, v.dialogue_fk::int8, v.eid::uuid, v.sentence_ord::int4?, v.body::text
+    from prod.dialogue_visual v
+    join prod.dialogue d on d.uid = v.dialogue_fk
+    where d.narration_fk = $1::int8
+    order by v.dialogue_fk asc, v.uid asc
+  |]
+
+
+insertAssetStmt :: Statement (Maybe Text, UUID, Maybe Text, Text, Int64, Maybe Text) Int64
+insertAssetStmt =
+  [TH.singletonStatement|
+    insert into asset
+      (name, eid, description, contentType, size, notes)
+    values
+      ($1::text?, $2::uuid, $3::text?, $4::text, $5::int8, $6::text?)
+    returning uid::int8
+  |]
