@@ -41,6 +41,7 @@ import Text.Megaparsec.Char
 -- Adapt the constructors/field names here if your local types differ.
 
 import Pitcher.NarrationTypes (Narration(..), Dialogue(..), DialogueVisual(..))
+import Control.Applicative (asum)
 
 --------------------------------------------------------------------------------
 -- Parser type
@@ -64,7 +65,10 @@ dialogueP = do
   headerGapP
   emos <- fromMaybe [] <$> optional (try emotionsP)
   sents <- some dialogueSentenceP
-  vis <- fromMaybe [] <$> optional (try visualsP)
+  vis <- asum [
+      try visualsP
+      , visualBlockGapP >> pure []
+    ]
   pure Dialogue { emotions = emos, sentences = sents, visuals = vis }
 
 
@@ -217,54 +221,52 @@ emotionItemP = do
 -- to exactly one block.
 
 visualsP :: NarrationParser [DialogueVisual]
-visualsP =
-      try singleVisualP
-  <|> multipleVisualsP
-
-singleVisualP :: NarrationParser [DialogueVisual]
-singleVisualP = do
-  skipIgnorableAllP
-  singleVisualHeaderP
-
-  sents <- some visualSentenceP
-
-  visualBlockCloseP
-
-  pure
-    [ DialogueVisual
-        { sentenceOrd = Nothing
-        , description = renderSentenceBlock sents
-        }
+visualsP = do
+  visualsHeaderP
+  asum [
+    do
+      void $ char ':'
+      sents <- some visualSentenceP
+      visualBlockCloseP
+      pure [DialogueVisual { sentenceOrd = Nothing, description = renderSentenceBlock sents }]
+    , do
+      n <- getIndexP
+      sents <- some visualSentenceP
+      visualBlockCloseP
+      rest <- many $ try $ do
+        visualBlockGapP
+        visualsHeaderP
+        n <- getIndexP
+        sents <- some visualSentenceP
+        visualBlockCloseP
+        pure DialogueVisual { sentenceOrd = Just n, description = renderSentenceBlock sents }
+      pure (DialogueVisual { sentenceOrd = Just n, description = renderSentenceBlock sents } : rest)
     ]
 
-multipleVisualsP :: NarrationParser [DialogueVisual]
-multipleVisualsP = do
-  firstVisual <- indexedVisualP
-  rest <- many $ do
-    visualBlockGapP
-    indexedVisualP
-  pure (firstVisual : rest)
+visualsHeaderP :: NarrationParser ()
+visualsHeaderP = do
+  void $ char '['
+  skipInlineStuffP
+  void $ string "visuals"
+
+
+getIndexP :: NarrationParser Int32
+getIndexP = do
+  void $ char '('
+  n <- fromIntegral <$> decimalP
+  void $ char ')'
+  void $ char ':'
+  pure n
+
 
 indexedVisualP :: NarrationParser DialogueVisual
 indexedVisualP = do
-  skipIgnorableAllP
+  -- skipIgnorableAllP
   ix <- indexedVisualHeaderP
-
   sents <- some visualSentenceP
-
   visualBlockCloseP
+  pure DialogueVisual { sentenceOrd = Just ix, description = renderSentenceBlock sents }
 
-  pure DialogueVisual
-    { sentenceOrd = Just ix
-    , description = renderSentenceBlock sents
-    }
-
-singleVisualHeaderP :: NarrationParser ()
-singleVisualHeaderP = do
-  void $ char '['
-  skipInlineStuffP
-  void $ string "visuals:"
-  skipInlineStuffP
 
 indexedVisualHeaderP :: NarrationParser Int32
 indexedVisualHeaderP = do
@@ -275,6 +277,33 @@ indexedVisualHeaderP = do
   void $ string "):"
   skipInlineStuffP
   pure n
+
+
+singleVisualP :: NarrationParser [DialogueVisual]
+singleVisualP = do
+  skipIgnorableAllP
+  singleVisualHeaderP
+  sents <- some visualSentenceP
+  visualBlockCloseP
+  pure [ DialogueVisual { sentenceOrd = Nothing, description = renderSentenceBlock sents } ]
+
+
+multipleVisualsP :: NarrationParser [DialogueVisual]
+multipleVisualsP = do
+  firstVisual <- indexedVisualP
+  rest <- many $ do
+    visualBlockGapP
+    indexedVisualP
+  pure (firstVisual : rest)
+
+
+singleVisualHeaderP :: NarrationParser ()
+singleVisualHeaderP = do
+  void $ char '['
+  skipInlineStuffP
+  void $ string "visuals:"
+  skipInlineStuffP
+
 
 visualBlockCloseP :: NarrationParser ()
 visualBlockCloseP = do
@@ -306,9 +335,6 @@ sentenceGapP :: NarrationParser ()
 sentenceGapP =
   void $ some sentenceGapChunkP
 
-visualBlockGapP :: NarrationParser ()
-visualBlockGapP =
-  void $ some visualGapChunkP
 
 ignorableChunkP :: NarrationParser ()
 ignorableChunkP =
@@ -321,6 +347,11 @@ inlineChunkP :: NarrationParser ()
 inlineChunkP =
       inlineSpace1P
   <|> try blockCommentP
+
+
+visualBlockGapP :: NarrationParser ()
+visualBlockGapP =
+  void $ some visualGapChunkP
 
 sentenceGapChunkP :: NarrationParser ()
 sentenceGapChunkP =

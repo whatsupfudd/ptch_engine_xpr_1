@@ -93,9 +93,11 @@ selectVizContextsByVisualEid =
   [TH.vectorStatement|
     select
       vc.kind::text, vc.seqnum::int4, vc.content::text
-    from prod.vizcontext vc
-    where vc.visual_fk = $1::uuid
-    order by vc.kind asc, vc.seqnum asc
+    from prod.dialogue_visual dv
+    join prod.dialogue d on d.uid = dv.dialogue_fk
+    join prod.vizcontext vc on vc.narration_fk = d.narration_fk
+    where dv.eid = $1::uuid
+    order by vc.kind desc, vc.seqnum asc
   |]
 
 

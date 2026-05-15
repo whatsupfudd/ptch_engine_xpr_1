@@ -44,8 +44,6 @@ workCmd opts rtOpts =
           , imageModel = rtOpts.aiConf.imageModel
           -- , imagePromptPrefix = "This is a storyboard sketch inspired by Aurélie Charbonnier that aims to build the key cinematographic and design details of the scene. The visuals for the scene are described as: "
           -- , imagePromptPostfix = " . The image is a portrait format, it is only the sketch and has no annotations or descriptions about the storyboard scene details, low resolution and uses a crayon drawing style."
-          -- , imagePromptPrefix = "This is a photorealistic image that aims to build the key cinematographic and design details of the scene, in the context of a UAE-centered environment. The visuals for the scene are described as: "
-          --, imagePromptPostfix = ". The image is a portrait format (9:16), it has no annotations or descriptions about the scene details, it is low resolution."
           }
         s3Cfg = makeS3Conn rtOpts.s3store
         videoCfg = VideoRenderCfg {

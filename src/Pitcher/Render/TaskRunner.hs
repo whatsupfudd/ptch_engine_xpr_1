@@ -796,8 +796,7 @@ loadVisualOwnerAndAnchorByEid pool visualEid =
 
 loadVizContextsByVisualEid :: Pool -> UUID -> IO (Vector (Int32, Text), Vector (Int32, Text))
 loadVizContextsByVisualEid pool visualEid = do
-  rows <- runSessionOrThrow "selectVizContextsByVisualEidStmt" pool $
-      statement visualEid Ts.selectVizContextsByVisualEid
+  rows <- runSessionOrThrow "selectVizContextsByVisualEid" pool $ statement visualEid Ts.selectVizContextsByVisualEid
   let
     prefixes = V.map (\(kind, seqnum, content) -> (seqnum, content)) $ V.filter (\(kind, _, _) -> kind == "prefix") rows
     postfixes = V.map (\(kind, seqnum, content) -> (seqnum, content)) $ V.filter (\(kind, _, _) -> kind == "postfix") rows
