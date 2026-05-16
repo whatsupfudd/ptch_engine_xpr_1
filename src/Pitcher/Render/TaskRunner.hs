@@ -876,7 +876,10 @@ renderAudioOnlySegment cfg audioPath dur outPath =
   runProcChecked cfg.ffmpegBin
     [ "-y"
     , "-f", "lavfi"
-    , "-i", "color=c=black:s=" <> sizeArg cfg <> ":r=" <> show cfg.fps <> ":d=" <> show dur
+    , "-i", "color=color=black:size=" <> sizeXArg cfg
+        <> ":rate=" <> show cfg.fps
+        <> ":duration=" <> show dur
+    -- , "-i", "color=c=black:s=" <> sizeArg cfg <> ":r=" <> show cfg.fps <> ":d=" <> show dur
     , "-i", audioPath
     , "-shortest"
     , "-c:v", "h264_videotoolbox"
@@ -920,191 +923,156 @@ concatStillClipsWithAudio cfg stillClips audioPath outPath =
       ]
 
 concatSegmentsWithGapsAndFades :: VideoRenderCfg -> Double -> Double -> [FilePath] -> FilePath -> IO ()
-concatSegmentsWithGapsAndFades cfg gapSeconds fadeSeconds segmentPaths outputPath =
-  let
-    nbrSegments = length segmentPaths
-    videoCfg =
-      VideoConfig
-        { width = cfg.widthPx
-        , height = cfg.heightPx
-        , fps = cfg.fps
-        , fadeDurationSeconds = fadeSeconds
-        , gapDurationSeconds = gapSeconds
-        }
+concatSegmentsWithGapsAndFades cfg gapSeconds fadeSeconds segmentPaths outputPath = do
+  putStrLn $
+    "@[concatSegmentsWithGapsAndFades] memory-friendly finalization; segments="
+      <> show (length segmentPaths)
+      <> ", gapSeconds="
+      <> show gapSeconds
+      <> ", fadeSeconds="
+      <> show fadeSeconds
 
-    audioCfg =
-      AudioConfig
-        { sampleRate = 48000
-        , channelLayout = "stereo"
-        , fadeDurationSeconds = fadeSeconds
-        , gapDurationSeconds = gapSeconds
-        }
+  withSystemTempDirectory "pitcher-final-pieces" $ \tmpDir -> do
+    durations <- mapM (probeDurationSeconds cfg.ffprobeBin) segmentPaths
 
-    (filterGraph, videoMap, audioMap) =
-      buildVideoFilterComplex videoCfg audioCfg nbrSegments
+    segmentPieces <-
+      forM (zip3 [(1 :: Int) ..] segmentPaths durations) $ \(ix, segmentPath, duration) -> do
+        let
+          outPath = tmpDir </> ("piece_" <> pad4 (ix * 2 - 1) <> "_segment.mp4")
+          fadeIn = ix > 1
+          fadeOut = ix < length segmentPaths
+          edgeFade = effectiveFadeDuration fadeSeconds duration fadeIn fadeOut
 
-    args =
-      concatMap (\p -> ["-i", p]) segmentPaths
-        <>
-          [ "-filter_complex", filterGraph
-          , "-map", videoMap
-          , "-map", audioMap
-          , "-c:v", "h264_videotoolbox"
-          , "-c:a", "aac_at"
-          , "-movflags", "+faststart"
-          , outputPath
-          ]
-  in
-    runProcChecked cfg.ffmpegBin args
+        renderFinalSegmentPiece cfg edgeFade duration fadeIn fadeOut segmentPath outPath
+        pure outPath
 
-data VideoConfig = VideoConfig
-  { width :: Int
-  , height :: Int
-  , fps :: Int
-  , fadeDurationSeconds :: Double
-  , gapDurationSeconds :: Double
-  }
+    gapPieces <-
+      if gapSeconds <= 0 || length segmentPaths <= 1 then
+        pure []
+      else
+        forM [1 .. length segmentPaths - 1] $ \ix -> do
+          let outPath = tmpDir </> ("piece_" <> pad4 (ix * 2) <> "_gap.mp4")
+          renderFinalGapPiece cfg gapSeconds outPath
+          pure outPath
 
-data AudioConfig = AudioConfig
-  { sampleRate :: Int
-  , channelLayout :: String
-  , fadeDurationSeconds :: Double
-  , gapDurationSeconds :: Double
-  }
+    let
+      pieces = interleaveFinalPieces segmentPieces gapPieces
+      listFile = tmpDir </> "final-list.txt"
 
-buildVideoFilterComplex :: VideoConfig -> AudioConfig -> Int -> (String, String, String)
-buildVideoFilterComplex videoCfg audioCfg nbrSegments =
-  case nbrSegments of
-    1 ->
-      ( L.intercalate "; "
-          [ normalizeVideo videoCfg 0 1 1
-          , normalizeAudio audioCfg 0 1 1
-          ]
-      , "[v1]"
-      , "[a1]"
-      )
+    writeConcatListFile listFile pieces
 
-    _ ->
-      ( L.intercalate "; " (videoNorms <> audioNorms <> gapDefs <> [concatExpr])
-      , "[vout]"
-      , "[aout]"
-      )
+    runProcChecked cfg.ffmpegBin
+      [ "-y"
+      , "-f", "concat"
+      , "-safe", "0"
+      , "-i", listFile
+      , "-c", "copy"
+      , "-movflags", "+faststart"
+      , outputPath
+      ]
+
+renderFinalSegmentPiece :: VideoRenderCfg -> Double -> Double -> Bool -> Bool -> FilePath -> FilePath -> IO ()
+renderFinalSegmentPiece cfg fadeSeconds durationSeconds fadeIn fadeOut inputPath outputPath =
+  runProcChecked cfg.ffmpegBin $
+    [ "-y"
+    , "-i", inputPath
+    , "-map", "0:v:0"
+    , "-map", "0:a:0"
+    , "-vf", finalSegmentVideoFilter cfg durationSeconds fadeSeconds fadeIn fadeOut
+    , "-af", finalSegmentAudioFilter durationSeconds fadeSeconds fadeIn fadeOut
+    , "-shortest"
+    ]
+      <> finalMp4EncodeArgs cfg
+      <> [ outputPath ]
+
+renderFinalGapPiece :: VideoRenderCfg -> Double -> FilePath -> IO ()
+renderFinalGapPiece cfg gapSeconds outputPath =
+  runProcChecked cfg.ffmpegBin $
+    [ "-y"
+    , "-f", "lavfi"
+    , "-i", "color=color=black:size=" <> sizeXArg cfg
+        <> ":rate=" <> show cfg.fps
+        <> ":duration=" <> show gapSeconds
+    -- , "-i", "color=c=black:s=" <> sizeArg cfg <> ":r=" <> show cfg.fps <> ":d=" <> show gapSeconds
+    , "-f", "lavfi"
+    , "-i", "anullsrc=r=48000:cl=stereo"
+    , "-t", show gapSeconds
+    , "-map", "0:v:0"
+    , "-map", "1:a:0"
+    , "-vf", "setsar=1,format=yuv420p,setpts=PTS-STARTPTS"
+    , "-af", "aformat=sample_rates=48000:channel_layouts=stereo,asetpts=PTS-STARTPTS"
+    , "-shortest"
+    ]
+      <> finalMp4EncodeArgs cfg
+      <> [ outputPath ]
+
+finalMp4EncodeArgs :: VideoRenderCfg -> [String]
+finalMp4EncodeArgs _cfg =
+  [ "-c:v", "h264_videotoolbox"
+  , "-pix_fmt", "yuv420p"
+  , "-c:a", "aac_at"
+  , "-ar", "48000"
+  , "-ac", "2"
+  , "-movflags", "+faststart"
+  ]
+
+finalSegmentVideoFilter :: VideoRenderCfg -> Double -> Double -> Bool -> Bool -> String
+finalSegmentVideoFilter cfg durationSeconds fadeSeconds fadeIn fadeOut =
+  L.intercalate "," $
+    [ "scale=" <> sizeArg cfg
+    , "setsar=1"
+    , "fps=" <> show cfg.fps
+    , "format=yuv420p"
+    , "setpts=PTS-STARTPTS"
+    ]
+      <> videoFadeFilters durationSeconds fadeSeconds fadeIn fadeOut
+
+finalSegmentAudioFilter :: Double -> Double -> Bool -> Bool -> String
+finalSegmentAudioFilter durationSeconds fadeSeconds fadeIn fadeOut =
+  L.intercalate "," $
+    [ "aformat=sample_rates=48000:channel_layouts=stereo"
+    , "asetpts=PTS-STARTPTS"
+    ]
+      <> audioFadeFilters durationSeconds fadeSeconds fadeIn fadeOut
+
+videoFadeFilters :: Double -> Double -> Bool -> Bool -> [String]
+videoFadeFilters durationSeconds fadeSeconds fadeIn fadeOut
+  | fadeSeconds <= 0 = []
+  | otherwise =
+      (if fadeIn then ["fade=t=in:st=0:d=" <> show fadeSeconds] else [])
+        <> (if fadeOut then ["fade=t=out:st=" <> show fadeOutStart <> ":d=" <> show fadeSeconds] else [])
   where
-    videoNorms =
-      [ normalizeVideo videoCfg i (i + 1) nbrSegments
-      | i <- [0 .. nbrSegments - 1]
-      ]
+    fadeOutStart = max 0 (durationSeconds - fadeSeconds)
 
-    audioNorms =
-      [ normalizeAudio audioCfg i (i + 1) nbrSegments
-      | i <- [0 .. nbrSegments - 1]
-      ]
-
-    gapDefs =
-      concat
-        [ [ makeGapVideo videoCfg i
-          , makeGapAudio audioCfg i
-          ]
-        | i <- [1 .. nbrSegments - 1]
-        ]
-
-    concatExpr =
-      concat (buildVideoConcatParts nbrSegments)
-        <> "concat=n="
-        <> show (2 * nbrSegments - 1)
-        <> ":v=1:a=1[vout][aout]"
-
-normalizeVideo :: VideoConfig -> Int -> Int -> Int -> String
-normalizeVideo cfg inputIdx outIdx totalCount =
-  "[" <> show inputIdx <> ":v]"
-    <> "scale=" <> show cfg.width <> ":" <> show cfg.height
-    <> ",setsar=1"
-    <> ",fps=" <> show cfg.fps
-    <> ",format=yuv420p"
-    <> ",setpts=PTS-STARTPTS"
-    <> videoTransitionFilters cfg inputIdx totalCount
-    <> "[v" <> show outIdx <> "]"
-
-normalizeAudio :: AudioConfig -> Int -> Int -> Int -> String
-normalizeAudio cfg inputIdx outIdx totalCount =
-  "[" <> show inputIdx <> ":a]"
-    <> "aformat=sample_rates=" <> show cfg.sampleRate
-    <> ":channel_layouts=" <> cfg.channelLayout
-    <> ",asetpts=PTS-STARTPTS"
-    <> audioTransitionFilters cfg inputIdx totalCount
-    <> "[a" <> show outIdx <> "]"
-
-videoTransitionFilters :: VideoConfig -> Int -> Int -> String
-videoTransitionFilters cfg inputIdx totalCount
-  | totalCount <= 1 = ""
-  | inputIdx == 0 = videoFadeOutAtEnd cfg
-  | inputIdx == totalCount - 1 = videoFadeInAtStart cfg
-  | otherwise = videoFadeInAtStart cfg <> videoFadeOutAtEnd cfg
-
-audioTransitionFilters :: AudioConfig -> Int -> Int -> String
-audioTransitionFilters cfg inputIdx totalCount
-  | totalCount <= 1 = ""
-  | inputIdx == 0 = audioFadeOutAtEnd cfg
-  | inputIdx == totalCount - 1 = audioFadeInAtStart cfg
-  | otherwise = audioFadeInAtStart cfg <> audioFadeOutAtEnd cfg
-
-videoFadeInAtStart :: VideoConfig -> String
-videoFadeInAtStart cfg =
-  ",fade=t=in:st=0:d=" <> show cfg.fadeDurationSeconds
-
-videoFadeOutAtEnd :: VideoConfig -> String
-videoFadeOutAtEnd cfg =
-  ",reverse,fade=t=in:st=0:d=" <> show cfg.fadeDurationSeconds <> ",reverse"
-
-audioFadeInAtStart :: AudioConfig -> String
-audioFadeInAtStart cfg =
-  ",afade=t=in:st=0:d=" <> show cfg.fadeDurationSeconds
-
-audioFadeOutAtEnd :: AudioConfig -> String
-audioFadeOutAtEnd cfg =
-  ",areverse,afade=t=in:st=0:d=" <> show cfg.fadeDurationSeconds <> ",areverse"
-
-makeGapVideo :: VideoConfig -> Int -> String
-makeGapVideo cfg gapIdx =
-  "color=c=black:s="
-    <> show cfg.width
-    <> "x"
-    <> show cfg.height
-    <> ":r="
-    <> show cfg.fps
-    <> ":d="
-    <> show cfg.gapDurationSeconds
-    <> "[sv"
-    <> show gapIdx
-    <> "]"
-
-makeGapAudio :: AudioConfig -> Int -> String
-makeGapAudio cfg gapIdx =
-  "anullsrc=r="
-    <> show cfg.sampleRate
-    <> ":cl="
-    <> cfg.channelLayout
-    <> ",atrim=duration="
-    <> show cfg.gapDurationSeconds
-    <> "[sa"
-    <> show gapIdx
-    <> "]"
-
-buildVideoConcatParts :: Int -> [String]
-buildVideoConcatParts n =
-  concatMap segment [1 .. n - 1] <> finalSegment n
+audioFadeFilters :: Double -> Double -> Bool -> Bool -> [String]
+audioFadeFilters durationSeconds fadeSeconds fadeIn fadeOut
+  | fadeSeconds <= 0 = []
+  | otherwise =
+      (if fadeIn then ["afade=t=in:st=0:d=" <> show fadeSeconds] else [])
+        <> (if fadeOut then ["afade=t=out:st=" <> show fadeOutStart <> ":d=" <> show fadeSeconds] else [])
   where
-    segment i =
-      [ "[v" <> show i <> "]"
-      , "[a" <> show i <> "]"
-      , "[sv" <> show i <> "]"
-      , "[sa" <> show i <> "]"
-      ]
+    fadeOutStart = max 0 (durationSeconds - fadeSeconds)
 
-    finalSegment i =
-      [ "[v" <> show i <> "]"
-      , "[a" <> show i <> "]"
-      ]
+effectiveFadeDuration :: Double -> Double -> Bool -> Bool -> Double
+effectiveFadeDuration requestedFade durationSeconds fadeIn fadeOut
+  | requestedFade <= 0 = 0
+  | durationSeconds <= 0 = 0
+  | fadeIn && fadeOut = min requestedFade (durationSeconds / 2)
+  | fadeIn || fadeOut = min requestedFade durationSeconds
+  | otherwise = 0
+
+interleaveFinalPieces :: [FilePath] -> [FilePath] -> [FilePath]
+interleaveFinalPieces [] _ = []
+interleaveFinalPieces [segmentPath] _ = [segmentPath]
+interleaveFinalPieces segmentPaths [] = segmentPaths
+interleaveFinalPieces (segmentPath : restSegments) (gapPath : restGaps) =
+  segmentPath : gapPath : interleaveFinalPieces restSegments restGaps
+
+pad4 :: Int -> String
+pad4 value =
+  replicate (max 0 (4 - length raw)) '0' <> raw
+  where
+    raw = show value
 
 probeDurationSeconds :: FilePath -> FilePath -> IO Double
 probeDurationSeconds ffprobeBin mediaPath = do
@@ -1137,6 +1105,10 @@ baseVideoFilter cfg =
     <> ",setsar=1,fps="
     <> show cfg.fps
     <> ",format=yuv420p,setpts=PTS-STARTPTS"
+
+sizeXArg :: VideoRenderCfg -> String
+sizeXArg cfg =
+  show cfg.widthPx <> "x" <> show cfg.heightPx
 
 sizeArg :: VideoRenderCfg -> String
 sizeArg cfg =

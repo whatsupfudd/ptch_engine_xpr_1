@@ -103,9 +103,21 @@ listRenderNodes dbPool mbLane mbStatus narrationUid = do
     Right vRows ->
       let
         filteredRows = case (mbLane, mbStatus) of
-          (Just lane, Just status) -> Vc.filter (\(_, _, _, lane', status', _) -> lane' == lane && status' == status) vRows
-          (Just lane, Nothing) -> Vc.filter (\(_, _, _, lane', _, _) -> lane' == lane) vRows
-          (Nothing, Just status) -> Vc.filter (\(_, _, _, _, status', _) -> status' == status) vRows
+          (Just lane, Just status) -> Vc.filter (\(_, _, _, lane', status', _, _, _, _) -> lane' == lane && status' == status) vRows
+          (Just lane, Nothing) -> Vc.filter (\(_, _, _, lane', _, _, _, _, _) -> lane' == lane) vRows
+          (Nothing, Just status) -> Vc.filter (\(_, _, _, _, status', _, _, _, _) -> status' == status) vRows
           (Nothing, Nothing) -> vRows
       in
       mapM_ print filteredRows
+
+showRenderNode :: Ls.RenderNodeRaw -> String
+showRenderNode (uid, sourceEid, exec, lane, status, createdAt, maxAttempts, attemptCount, errorText) =
+  "UID: " <> show uid <> " "
+  <> "Source EID: " <> show sourceEid <> " "
+  <> "Exec: " <> show exec <> " "
+  <> "Lane: " <> show lane <> " "
+  <> "Status: " <> show status <> " "
+  <> "Created At: " <> show createdAt <> " "
+  <> "Max Attempts: " <> show maxAttempts <> " "
+  <> "Attempt Count: " <> show attemptCount <> " "
+  <> "Error Text: " <> show errorText

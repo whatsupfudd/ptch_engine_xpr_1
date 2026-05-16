@@ -59,6 +59,7 @@ library
       Pitcher.Render.GraphTypes
       Pitcher.Render.Producer
       Pitcher.Render.TaskRunner
+      Pitcher.Render.TaskRunnerV1
       Pitcher.Render.TaskTypes
       Pitcher.Render.Types
       Pitcher.Render.WorkerLease
