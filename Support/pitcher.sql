@@ -160,11 +160,13 @@ create table if not exists prod.render_artifact (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
 
-  unique (narration_fk, derive_key)
+  -- unique (narration_fk, derive_key)
 );
 
-create index if not exists pitcher_render_artifact_narration_idx
-  on prod.render_artifact (narration_fk, derive_key);
+create unique index pitcher_render_artifact_narration_derive_key_constraint on prod.render_artifact (narration_fk, md5(derive_key));
+
+
+create index if not exists pitcher_render_artifact_narration_idx on prod.render_artifact (narration_fk, md5(derive_key));
 
 
 create table if not exists prod.render_node (

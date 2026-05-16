@@ -333,7 +333,7 @@ completeNodeSuccessStmt =
         $5::uuid?,
         $6::text?
       from meta m
-      on conflict (narration_fk, derive_key)
+      on conflict (narration_fk, md5(derive_key))
       do update
         set lane = excluded.lane,
             exec = excluded.exec,
@@ -440,7 +440,7 @@ completeNodeFailureStmt =
           $4::text
       from meta m
       where m.status = 'failed'
-      on conflict (narration_fk, derive_key)
+      on conflict (narration_fk, md5(derive_key))
       do update
         set lane = excluded.lane,
             exec = excluded.exec,
@@ -566,7 +566,7 @@ selectUpstreamNodeAssetStmt =
       n.artifact_kind::text
     from prod.render_node n
     where n.render_job_fk = $1::int8
-      and n.derive_key = $2::text
+      and md5(n.derive_key) = md5($2::text)
       and n.status = 'done'
       and n.asset_fk is not null
       and n.asset_eid is not null

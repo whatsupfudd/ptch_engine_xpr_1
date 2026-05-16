@@ -85,7 +85,8 @@ listWithNarrations dbPool narrationSet mbFilter rtOpts = do
     Just filter ->
       case filter of
         DialogueFC -> mapM_ (listDialogues dbPool . uid) narrationSet
-        RenderNodeFC lane status jobUid -> mapM_ (listRenderNodes dbPool lane status jobUid . uid) narrationSet
+        RenderNodeFC lane status Nothing -> mapM_ (listRenderNodes dbPool lane status . uid) narrationSet
+        RenderNodeFC lane status (Just jobUid) -> listRenderNodesForJob dbPool lane status jobUid
 
 
 listDialogues :: Pool -> Int64 -> IO ()
@@ -96,11 +97,9 @@ listDialogues dbPool narrationUid = do
     Right vRows -> mapM_ print vRows
   
 
-listRenderNodes :: Pool -> Maybe Text -> Maybe Text -> Maybe Int64 -> Int64 -> IO ()
-listRenderNodes dbPool mbLane mbStatus mbJobUid narrationUid = do
-  rezA <- case mbJobUid of
-    Just jobUid -> use dbPool $ Hs.statement jobUid Ls.fetchRenderNodesByJobStmt
-    Nothing -> use dbPool $ Hs.statement narrationUid Ls.fetchRenderNodesStmt
+listRenderNodes :: Pool -> Maybe Text -> Maybe Text -> Int64 -> IO ()
+listRenderNodes dbPool mbLane mbStatus narrationUid = do
+  rezA <- use dbPool $ Hs.statement narrationUid Ls.fetchRenderNodesStmt
 
   case rezA of
     Left err -> error $ "@[listRenderNodes] fetchRenderNodesStmt err: " <> show err
@@ -114,6 +113,20 @@ listRenderNodes dbPool mbLane mbStatus mbJobUid narrationUid = do
       in
       mapM_ print filteredRows
 
+listRenderNodesForJob :: Pool -> Maybe Text -> Maybe Text -> Int64 -> IO ()
+listRenderNodesForJob dbPool mbLane mbStatus jobUid = do
+  rezA <- use dbPool $ Hs.statement jobUid Ls.fetchRenderNodesByJobStmt
+  case rezA of
+    Left err -> error $ "@[listRenderNodesForJob] fetchRenderNodesByJobStmt err: " <> show err
+    Right vRows ->
+      let
+        filteredRows = case (mbLane, mbStatus) of
+          (Just lane, Just status) -> Vc.filter (\(_, _, _, lane', status', _, _, _, _) -> lane' == lane && status' == status) vRows
+          (Just lane, Nothing) -> Vc.filter (\(_, _, _, lane', _, _, _, _, _) -> lane' == lane) vRows
+          (Nothing, Just status) -> Vc.filter (\(_, _, _, _, status', _, _, _, _) -> status' == status) vRows
+          (Nothing, Nothing) -> vRows
+      in
+      mapM_ print filteredRows
 
 showRenderNode :: Ls.RenderNodeRaw -> String
 showRenderNode (uid, sourceEid, exec, lane, status, createdAt, maxAttempts, attemptCount, errorText) =

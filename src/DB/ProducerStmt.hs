@@ -254,7 +254,7 @@ markReusableNodesDoneStmt =
     from reusable r
     where n.render_job_fk = $1::int8
       and n.status in ('pending', 'ready')
-      and n.derive_key = r.derive_key
+      and md5(n.derive_key) = md5(r.derive_key)
   |]
 
 --------------------------------------------------------------------------------
@@ -277,7 +277,7 @@ promoteReadyNodesStmt =
           from prod.render_input ri
           left join prod.render_node upstream
             on upstream.render_job_fk = n.render_job_fk
-           and upstream.derive_key = ri.ref_derive_key
+           and md5(upstream.derive_key) = md5(ri.ref_derive_key)
           where ri.node_fk = n.uid
             and ri.input_kind = 'node'
             and (

@@ -55,7 +55,7 @@ startPg dbC =
     baseSettings = Hp.settings pString
     -}
   in do
-  liftIO . putStrLn $ "@[startPg] user: " <> show dbC.user <> " db: " <> show dbC.dbase <> "."
+  -- liftIO . putStrLn $ "@[startPg] user: " <> show dbC.user <> " db: " <> show dbC.dbase <> "."
   -- 0.10.1:
   ContT $ bracket (Hp.acquire dbC.poolSize dbC.acqTimeout dbC.poolTimeOut dbC.poolIdleTime dbSettings) Hp.release
   -- 1.3: ContT $ bracket (Hp.acquire settings) Hp.release

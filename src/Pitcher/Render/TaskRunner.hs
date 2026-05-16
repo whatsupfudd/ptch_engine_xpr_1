@@ -924,13 +924,9 @@ concatStillClipsWithAudio cfg stillClips audioPath outPath =
 
 concatSegmentsWithGapsAndFades :: VideoRenderCfg -> Double -> Double -> [FilePath] -> FilePath -> IO ()
 concatSegmentsWithGapsAndFades cfg gapSeconds fadeSeconds segmentPaths outputPath = do
-  putStrLn $
-    "@[concatSegmentsWithGapsAndFades] memory-friendly finalization; segments="
-      <> show (length segmentPaths)
-      <> ", gapSeconds="
-      <> show gapSeconds
-      <> ", fadeSeconds="
-      <> show fadeSeconds
+  putStrLn $ "@[concatSegmentsWithGapsAndFades] memory-friendly finalization; segments="
+    <> show (length segmentPaths) <> ", gapSeconds=" <> show gapSeconds
+    <> ", fadeSeconds=" <> show fadeSeconds
 
   withSystemTempDirectory "pitcher-final-pieces" $ \tmpDir -> do
     durations <- mapM (probeDurationSeconds cfg.ffprobeBin) segmentPaths
