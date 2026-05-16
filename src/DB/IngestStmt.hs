@@ -78,7 +78,7 @@ selectNarrationByNameStmt =
     select
       n.uid::int8, n.eid::uuid, n.title::text, n.created_at::timestamptz
     from prod.narration n
-    where n.title = $1::text
+    where n.nickname = $1::text
   |]
 
 

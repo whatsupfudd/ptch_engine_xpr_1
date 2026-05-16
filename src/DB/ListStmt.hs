@@ -43,3 +43,16 @@ fetchRenderNodesStmt =
       and j.status = 'running'
     order by created_at desc
   |]
+
+
+fetchRenderNodesByJobStmt :: Statement Int64 (Vc.Vector RenderNodeRaw)
+fetchRenderNodesByJobStmt =
+  [TH.vectorStatement|
+    select
+      n.uid::int8, n.source_eid::uuid?, n.exec::text, n.lane::text
+      , n.status::text, n.created_at::timestamptz, n.max_attempts::int4, n.attempt_count::int4
+      , n.error_text::text?
+    from prod.render_node n
+    where n.render_job_fk = $1::int8
+    order by created_at desc
+  |]

@@ -85,7 +85,7 @@ listWithNarrations dbPool narrationSet mbFilter rtOpts = do
     Just filter ->
       case filter of
         DialogueFC -> mapM_ (listDialogues dbPool . uid) narrationSet
-        RenderNodeFC lane status -> mapM_ (listRenderNodes dbPool lane status . uid) narrationSet
+        RenderNodeFC lane status jobUid -> mapM_ (listRenderNodes dbPool lane status jobUid . uid) narrationSet
 
 
 listDialogues :: Pool -> Int64 -> IO ()
@@ -95,9 +95,13 @@ listDialogues dbPool narrationUid = do
     Left err -> error $ "@[listDialogues] fetchDialoguesStmt err: " <> show err
     Right vRows -> mapM_ print vRows
   
-listRenderNodes :: Pool -> Maybe Text -> Maybe Text -> Int64 -> IO ()
-listRenderNodes dbPool mbLane mbStatus narrationUid = do
-  rezA <- use dbPool $ Hs.statement narrationUid Ls.fetchRenderNodesStmt
+
+listRenderNodes :: Pool -> Maybe Text -> Maybe Text -> Maybe Int64 -> Int64 -> IO ()
+listRenderNodes dbPool mbLane mbStatus mbJobUid narrationUid = do
+  rezA <- case mbJobUid of
+    Just jobUid -> use dbPool $ Hs.statement jobUid Ls.fetchRenderNodesByJobStmt
+    Nothing -> use dbPool $ Hs.statement narrationUid Ls.fetchRenderNodesStmt
+
   case rezA of
     Left err -> error $ "@[listRenderNodes] fetchRenderNodesStmt err: " <> show err
     Right vRows ->
@@ -109,6 +113,7 @@ listRenderNodes dbPool mbLane mbStatus narrationUid = do
           (Nothing, Nothing) -> vRows
       in
       mapM_ print filteredRows
+
 
 showRenderNode :: Ls.RenderNodeRaw -> String
 showRenderNode (uid, sourceEid, exec, lane, status, createdAt, maxAttempts, attemptCount, errorText) =

@@ -10,23 +10,18 @@ import Hasql.Pool (Pool)
 
 import DB.Connect (startPg)
 import Assets.S3Ops (makeS3Conn)
-import Options.Cli (PublishOpts (..))
+import Options.Cli (PublishOpts (..), NarrationIdOpt (..))
 import Options.Runtime (RunOptions (..), PgDbConfig (..), AiConfig (..))
 import Pitcher.Render.Types (RenderOutcome (..))
 
 publishCmd :: PublishOpts -> RunOptions -> IO ()
-publishCmd opts rtOpts = do
-  case fromString opts.jobUid of
-    Nothing -> error $ "@[publishCmd] invalid job UID: " <> show opts.jobUid
-    Just jobEid ->
-      let
-        env = 1
-      in
-      let
-        pgPool = startPg rtOpts.pgDbConf
-      in do
-      Mc.runContT pgPool (launchJob jobEid)
+publishCmd opts rtOpts =
+  let
+    env = 1
+    pgPool = startPg rtOpts.pgDbConf
+  in do
+  Mc.runContT pgPool (launchJob opts.narrationId)
 
-launchJob :: UUID -> Pool -> IO ()
-launchJob jobEid pool = do
-  putStrLn $ "Publishing job " <> show jobEid
+launchJob :: NarrationIdOpt -> Pool -> IO ()
+launchJob narrTarget pool = do
+  putStrLn $ "Publishing narration " <> show narrTarget

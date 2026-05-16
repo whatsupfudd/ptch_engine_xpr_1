@@ -2,7 +2,7 @@
 
 module Options.Cli where
 
-import Data.Int (Int32)
+import Data.Int (Int32, Int64)
 import Data.Text (Text, pack)
 import Data.UUID (UUID, fromString)
 import Options.Applicative
@@ -19,6 +19,7 @@ data CliOptions = CliOptions {
  }
  deriving stock (Show)
 
+
 data IngestOpts = IngestOpts
   { inputPath :: FilePath
   , refID :: NarrationIdOpt
@@ -34,6 +35,7 @@ data NarrationIdOpt =
   EidNI Text
   | NameNI Text
   deriving (Eq, Show)
+
 
 textOption :: Mod OptionFields String -> Parser Text
 textOption mods =
@@ -63,12 +65,12 @@ newtype LaunchOpts = LaunchOpts {
   deriving (Eq, Show)
 
 newtype PublishOpts = PublishOpts { 
-    jobUid :: String
+    narrationId :: NarrationIdOpt
   }
   deriving (Eq, Show)
 
 newtype ProduceOpts = ProduceOpts { 
-    jobUid :: String
+    narrationId :: NarrationIdOpt
   }
   deriving (Eq, Show)
 
@@ -90,7 +92,7 @@ data ListOpts = ListOpts {
 
 data FilterSubCmd =
   DialogueFC
-  | RenderNodeFC (Maybe Text) (Maybe Text)
+  | RenderNodeFC (Maybe Text) (Maybe Text) (Maybe Int64)
   deriving (Eq, Show)
 
 
@@ -214,11 +216,13 @@ launchOptsP =
   
 publishOptsP :: Parser PublishOpts
 publishOptsP =
-  PublishOpts <$> strArgument ( metavar "NARRATION-UID" <> help "UUID of the narration to publish." )
+  PublishOpts <$> narrationIdOptsP
+  -- strArgument ( metavar "NARRATION-UID" <> help "UUID of the narration to publish." )
 
 produceOptsP :: Parser ProduceOpts
 produceOptsP =
-  ProduceOpts <$> strArgument ( metavar "NARRATION-UID" <> help "UUID of the narration to produce." )
+  ProduceOpts <$> narrationIdOptsP
+  -- strArgument ( metavar "NARRATION-UID" <> help "UUID of the narration to produce." )
 
 workOptsP :: Parser WorkOpts
 workOptsP =
@@ -245,3 +249,4 @@ renderNodeFilterP =
   RenderNodeFC
     <$> optional ( strOption ( long "lane" <> metavar "LANE" <> help "Lane." ) )
     <*> optional ( strOption ( long "status" <> metavar "STATUS" <> help "Status." ) )
+    <*> optional ( option auto ( long "job" <> metavar "JOB-UID" <> help "Job UID." ) )

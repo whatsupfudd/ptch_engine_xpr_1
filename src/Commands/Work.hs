@@ -46,11 +46,13 @@ workCmd opts rtOpts =
           -- , imagePromptPostfix = " . The image is a portrait format, it is only the sketch and has no annotations or descriptions about the storyboard scene details, low resolution and uses a crayon drawing style."
           }
         s3Cfg = makeS3Conn rtOpts.s3store
+        -- videoSize = (1920, 1080)
+        videoSize = (1080, 1920)
         videoCfg = VideoRenderCfg {
             ffmpegBin = "/opt/homebrew/bin/ffmpeg"
           , ffprobeBin = "/opt/homebrew/bin/ffprobe"
-          , widthPx = 1920
-          , heightPx = 1080
+          , widthPx = fst videoSize
+          , heightPx = snd videoSize
           , fps = 24
           , gapDurationSeconds = 0.5
           , fadeDurationSeconds = 0.5

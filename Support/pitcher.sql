@@ -197,8 +197,10 @@ create table if not exists prod.render_node (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
 
-  unique (render_job_fk, derive_key)
+  -- unique (render_job_fk, derive_key)
 );
+
+create unique index pitcher_render_node_job_derive_key_constraint on prod.render_node (render_job_fk, md5(derive_key));
 
 create index if not exists pitcher_render_node_job_status_idx
   on prod.render_node (render_job_fk, status, ord);

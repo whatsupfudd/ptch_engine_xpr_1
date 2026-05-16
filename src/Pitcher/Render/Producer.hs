@@ -47,8 +47,10 @@ import Hasql.Pool (Pool)
 import Hasql.Session (statement)
 import qualified Hasql.Transaction as HT
 
+import Options.Cli (NarrationIdOpt (..))
 import DB.Helpers ( runSessionOrThrow, runTx )
 import qualified DB.ProducerStmt as Ps
+import qualified DB.IngestStmt as Is
 import Pitcher.NarrationTypes ( DialogueRender(..), NarrationRender(..), VisualRender(..) )
 import Pitcher.Render.GraphTypes ( NodeLane(..), NodeExec(..), SourceKind(..), InputKind(..), nodeLaneToText, nodeExecToText, sourceKindToText, inputKindToText )
 import qualified DB.ProducerOps as Po
@@ -130,21 +132,26 @@ instance MonadFail HT.Transaction where
 --------------------------------------------------------------------------------
 -- Entry point
 
-launchProducer :: ProducerCfg -> Pool -> UUID -> IO Int64
-launchProducer cfg pool narrationEid = do
-  narrationUid <-
-    runSessionOrThrow "selectNarrationUidStmt" pool (statement narrationEid Ps.selectNarrationUidStmt) >>= \case
-      Nothing ->
-        throwIO . userError $
-          "@[launchProducer] narration not found: " <> Uu.toString narrationEid
-      Just uid ->
-        pure uid
+launchProducer :: ProducerCfg -> Pool -> NarrationIdOpt -> IO Int64
+launchProducer cfg pool narrTarget = do
+  narrationIDs <- case narrTarget of
+    EidNI narrationEidTxt -> do
+      case Uu.fromText narrationEidTxt of
+        Nothing -> throwIO . userError $ "@[launchProducer] invalid eid: " <> T.unpack narrationEidTxt
+        Just narrationEid -> do
+          runSessionOrThrow "selectNarrationUidStmt" pool (statement narrationEid Ps.selectNarrationUidStmt) >>= \case
+            Nothing -> throwIO . userError $ "@[launchProducer] narration not found: " <> Uu.toString narrationEid
+            Just uid -> pure (uid, narrationEid)
+    NameNI narrationName -> do
+      runSessionOrThrow "selectNarrationUidStmt" pool (statement narrationName Is.selectNarrationByNameStmt) >>= \case
+        Nothing -> throwIO . userError $ "@[launchProducer] narration not found: " <> T.unpack narrationName
+        Just (uid, narrationEid, _, _) -> pure (uid, narrationEid)
 
-  narration <- Po.loadNarrationRender pool (narrationUid, narrationEid)
+  narration <- Po.loadNarrationRender pool narrationIDs
 
   when (null narration.dialogues) $ throwIO . userError $ "@[launchProducer] narration has no dialogues."
 
-  jobUid <- runSessionOrThrow "createRenderJobStmt" pool $ statement narrationUid Ps.createRenderJobStmt
+  jobUid <- runSessionOrThrow "createRenderJobStmt" pool $ statement (fst narrationIDs) Ps.createRenderJobStmt
   _ <- runSessionOrThrow "markPreviousJobsSupersededStmt" pool $ statement jobUid Ps.markPreviousJobsSupersededStmt
 
   let graph = buildRenderGraph cfg narration
