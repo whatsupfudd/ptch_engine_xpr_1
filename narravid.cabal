@@ -31,6 +31,7 @@ library
       Assets.Store
       Assets.Types
       Commands
+      Commands.Export
       Commands.Help
       Commands.Ingest
       Commands.List

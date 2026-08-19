@@ -434,3 +434,14 @@ insertAssetStmt =
       ($1::text?, $2::uuid, $3::text?, $4::text, $5::int8, $6::text?)
     returning uid::int8
   |]
+
+
+selectRenderJobByEid :: Statement UUID (Maybe Int64)
+selectRenderJobByEid =
+  [TH.maybeStatement|
+    select rj.uid::int8
+    from prod.render_job rj
+    where rj.eid = $1::uuid
+    order by rj.created_at desc
+    limit 1
+  |]

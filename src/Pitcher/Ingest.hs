@@ -158,7 +158,7 @@ ingest opts pool = do
               <> T.pack opts.inputPath <> ": " <> renderReport report
 
 
-resolveNarrationEid :: Pool -> UUID -> IO (Either String (Maybe (Int64, Text, Text, UTCTime)))
+resolveNarrationEid :: Pool -> UUID -> IO (Either String (Maybe (Int64, Maybe Text, Text, UTCTime)))
 resolveNarrationEid pool eid = do
   eiRez <- use pool $ HS.statement eid Is.selectNarrationEidStmt
   case eiRez of

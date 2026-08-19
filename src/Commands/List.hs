@@ -3,6 +3,7 @@ module Commands.List (listCmd) where
 import qualified Control.Monad.Cont as Mc
 
 import Data.Int (Int64)
+import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.UUID (UUID)
 import qualified Data.UUID as Uu
@@ -65,7 +66,7 @@ listNarrations opts rtOpts dbPool = do
                   case mbRows of
                     Nothing -> error $ "@[listNarrations] narration not found: " <> show tEid
                     Just (uid, nickname, title, createdAt) ->
-                      pure . Vc.singleton $ Narration uid eid nickname title createdAt
+                      pure . Vc.singleton $ Narration uid eid (fromMaybe "<nil>"nickname) title createdAt
         NameNI name -> do
           eiRez <- use dbPool $ Hs.statement name Is.selectNarrationByNameStmt
           case eiRez of
@@ -87,6 +88,7 @@ listWithNarrations dbPool narrationSet mbFilter rtOpts = do
         DialogueFC -> mapM_ (listDialogues dbPool . uid) narrationSet
         RenderNodeFC lane status Nothing -> mapM_ (listRenderNodes dbPool lane status . uid) narrationSet
         RenderNodeFC lane status (Just jobUid) -> listRenderNodesForJob dbPool lane status jobUid
+        RenderJobFC -> mapM_ (listRenderJobs dbPool . eid) narrationSet
 
 
 listDialogues :: Pool -> Int64 -> IO ()
@@ -96,6 +98,13 @@ listDialogues dbPool narrationUid = do
     Left err -> error $ "@[listDialogues] fetchDialoguesStmt err: " <> show err
     Right vRows -> mapM_ print vRows
   
+
+listRenderJobs :: Pool -> UUID -> IO ()
+listRenderJobs dbPool narrationEid = do
+  rezA <- use dbPool $ Hs.statement narrationEid Ls.fetchRenderJobsByNarration
+  case rezA of
+    Left err -> error $ "@[listRenderJobs] fetchRenderJobsStmt err: " <> show err
+    Right vRows -> mapM_ print vRows
 
 listRenderNodes :: Pool -> Maybe Text -> Maybe Text -> Int64 -> IO ()
 listRenderNodes dbPool mbLane mbStatus narrationUid = do
@@ -139,3 +148,11 @@ showRenderNode (uid, sourceEid, exec, lane, status, createdAt, maxAttempts, atte
   <> "Max Attempts: " <> show maxAttempts <> " "
   <> "Attempt Count: " <> show attemptCount <> " "
   <> "Error Text: " <> show errorText
+
+showRenderJob :: Ls.RenderJobRaw -> String
+showRenderJob (uid, eid, status, createdAt, completedAt) =
+  "UID: " <> show uid <> " "
+  <> "EID: " <> show eid <> " "
+  <> "Status: " <> show status <> " "
+  <> "Created At: " <> show createdAt <> " "
+  <> "Completed At: " <> show completedAt

@@ -35,7 +35,7 @@ runWithOptions cliOptions fileOptions = do
             Opt.ProduceCmd produceOpts -> Cmd.produceCmd produceOpts
             Opt.WorkCmd workOpts -> Cmd.workCmd workOpts
             Opt.ListCmd listOpts -> Cmd.listCmd listOpts
-            -- Opt.LaunchCmd launchOpts -> Cmd.launchCmd launchOpts
+            Opt.ExportCmd exportOpts -> Cmd.exportCmd exportOpts
       eiRtOptions <- Opt.mergeOptions cliOptions fileOptions envOptions
       case eiRtOptions of
         Left errMsg -> error $ "@[runWithOptions] mergeOptions err: " <> errMsg

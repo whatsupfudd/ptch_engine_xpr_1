@@ -56,3 +56,17 @@ fetchRenderNodesByJobStmt =
     where n.render_job_fk = $1::int8
     order by created_at desc
   |]
+
+
+type RenderJobRaw = (Int64, UUID, Text, UTCTime, Maybe UTCTime)
+fetchRenderJobsByNarration :: Statement UUID (Vc.Vector RenderJobRaw)
+fetchRenderJobsByNarration =
+  [TH.vectorStatement|
+    select
+      rj.uid::int8, rj.eid::uuid, rj.status::text, rj.created_at::timestamptz
+      , rj.completed_at::timestamptz?
+    from prod.render_job rj
+    join prod.narration n on n.uid = rj.narration_fk
+    where n.eid = $1::uuid
+    order by created_at desc
+  |]

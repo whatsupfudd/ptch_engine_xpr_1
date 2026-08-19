@@ -55,6 +55,7 @@ data Command =
   | ProduceCmd ProduceOpts
   | WorkCmd WorkOpts
   | ListCmd ListOpts
+  | ExportCmd ExportOpts
   -- Deprecated:
   -- | LaunchCmd LaunchOpts
   deriving stock (Show)
@@ -89,10 +90,16 @@ data ListOpts = ListOpts {
   }
   deriving (Eq, Show)
 
+data ExportOpts = ExportOpts { 
+    prodID :: Text
+  , outputPath :: FilePath
+  }
+  deriving (Eq, Show)
 
 data FilterSubCmd =
   DialogueFC
   | RenderNodeFC (Maybe Text) (Maybe Text) (Maybe Int64)
+  | RenderJobFC
   deriving (Eq, Show)
 
 
@@ -160,6 +167,7 @@ commandDefs =
       , ("produce", ProduceCmd <$> produceOptsP, "Produces a render job.")
       , ("work", WorkCmd <$> workOptsP, "Works a render job.")
       , ("list", ListCmd <$> listCmdP, "Lists narrations.")
+      , ("export", ExportCmd <$> exportOptsP, "Exports a production.")
       -- Deprecated:
       -- , ("launch", LaunchCmd <$> launchOptsP, "Launches a render job.")
       ]
@@ -240,6 +248,7 @@ listCmdP =
     <*> optional ( subparser (
           command "dialogues" ( info (helper <*> pure DialogueFC) (progDesc "Filter by dialogue.") )
           <> command "rnode" ( info (helper <*> renderNodeFilterP) (progDesc "Filter by render node.") )
+          <> command "prod" ( info (helper <*> pure RenderJobFC) (progDesc "Filter by render node.") )
         )
       )
 
@@ -250,3 +259,10 @@ renderNodeFilterP =
     <$> optional ( strOption ( long "lane" <> metavar "LANE" <> help "Lane." ) )
     <*> optional ( strOption ( long "status" <> metavar "STATUS" <> help "Status." ) )
     <*> optional ( option auto ( long "job" <> metavar "JOB-UID" <> help "Job UID." ) )
+
+
+exportOptsP :: Parser ExportOpts
+exportOptsP =
+  ExportOpts
+    <$> strArgument (  metavar "PRODUCTION-ID" <> help "UUID of the render job to export." )
+    <*> strArgument (  metavar "PATH" <> help "Destination path for the finalized video." )

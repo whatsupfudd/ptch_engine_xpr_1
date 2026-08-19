@@ -54,8 +54,8 @@ workCmd opts rtOpts =
           , widthPx = fst videoSize
           , heightPx = snd videoSize
           , fps = 24
-          , gapDurationSeconds = 0.5
-          , fadeDurationSeconds = 0.5
+          , gapDurationSeconds = 1
+          , fadeDurationSeconds = 1
           }
       in do
       -- putStrLn $ "@[workCmd] using s3store: " <> show rtOpts.s3store

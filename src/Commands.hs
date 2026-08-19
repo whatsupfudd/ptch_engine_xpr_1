@@ -6,6 +6,7 @@ module Commands  (
   , module Commands.Publish
   , module Commands.Work
   , module Commands.List
+  , module Commands.Export
  )
 where
 
@@ -16,3 +17,4 @@ import Commands.Produce
 import Commands.Publish
 import Commands.Work
 import Commands.List
+import Commands.Export
