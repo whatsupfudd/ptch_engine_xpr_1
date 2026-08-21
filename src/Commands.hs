@@ -7,6 +7,7 @@ module Commands  (
   , module Commands.Work
   , module Commands.List
   , module Commands.Export
+  , module Commands.YouTube
  )
 where
 
@@ -18,3 +19,4 @@ import Commands.Publish
 import Commands.Work
 import Commands.List
 import Commands.Export
+import Commands.YouTube

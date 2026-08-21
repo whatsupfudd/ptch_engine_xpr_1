@@ -47,12 +47,21 @@ data AiOptions = AiOptions {
   }
   deriving stock (Show, Generic)
 
+data YouTubeOptions = YouTubeOptions {
+    clientId :: Maybe Text
+  , clientSecret :: Maybe Text
+  , refreshToken :: Maybe Text
+  , refreshTokenFile :: Maybe FilePath
+  }
+  deriving stock (Show, Generic)
+
 data FileOptions = FileOptions {
   debug :: Maybe Int
   , primaryLocale :: Maybe String
   , pgDb :: Maybe PgDbOpts
   , s3store :: Maybe S3Options
   , ai :: Maybe AiOptions
+  , youTube :: Maybe YouTubeOptions
  }
  deriving stock (Show, Generic)
 
@@ -75,6 +84,7 @@ instance Aes.FromJSON FileOptions
 instance Aes.FromJSON PgDbOpts
 instance Aes.FromJSON S3Options
 instance Aes.FromJSON AiOptions
+instance Aes.FromJSON YouTubeOptions
 
 
 parseFileOptions :: FilePath -> IO (Either String FileOptions)

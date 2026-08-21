@@ -1,0 +1,6 @@
+#!/bin/bash
+
+CLIENT_ID=1017219691294-k2b3n3fo5r4d783g30au8vc3go0slbjt.apps.googleusercontent.com
+
+echo "https://accounts.google.com/o/oauth2/v2/auth?scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fyoutube.upload&access_type=offline&include_granted_scopes=true&state=state_parameter_passthrough_value&redirect_uri=http%3A%2F%2Flocalhost%3A8080&response_type=code&client_id=$CLIENT_ID"
+

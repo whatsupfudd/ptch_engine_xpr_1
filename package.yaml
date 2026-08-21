@@ -23,6 +23,7 @@ dependencies:
   - aeson
   - base >= 4.7 && < 5
   - bytestring
+  - case-insensitive
   - containers
   - directory
   - text
@@ -64,6 +65,11 @@ dependencies:
   # For temp files:
   - temporary
   - random
+  # For Google OAuth:
+  - cryptonite
+  - memory
+  - wai
+  - warp
 
 
 default-extensions:

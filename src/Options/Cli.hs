@@ -56,6 +56,7 @@ data Command =
   | WorkCmd WorkOpts
   | ListCmd ListOpts
   | ExportCmd ExportOpts
+  | YouTubeCmd YouTubeOpts
   -- Deprecated:
   -- | LaunchCmd LaunchOpts
   deriving stock (Show)
@@ -65,10 +66,20 @@ newtype LaunchOpts = LaunchOpts {
   }
   deriving (Eq, Show)
 
-newtype PublishOpts = PublishOpts { 
-    narrationId :: NarrationIdOpt
+
+data PublishOpts = PublishOpts {
+    prodID :: Text
+  , titleVideo :: Maybe Text
+  , descriptionVideo :: Text
+  , tagsVideo :: [Text]
+  , categoryID :: Text
+  , privacyVideo :: Text
+  , notifySubscribers :: Bool
+  , madeForKids :: Maybe Bool
+  , syntheticMedia :: Maybe Bool
   }
   deriving (Eq, Show)
+
 
 newtype ProduceOpts = ProduceOpts { 
     narrationId :: NarrationIdOpt
@@ -95,6 +106,26 @@ data ExportOpts = ExportOpts {
   , outputPath :: FilePath
   }
   deriving (Eq, Show)
+
+newtype YouTubeOpts = YouTubeOpts
+  { commandYoutube :: YouTubeSubCmd
+  }
+  deriving (Eq, Show)
+
+
+newtype YouTubeSubCmd =
+  AuthorizeYouTubeCmd YouTubeAuthorizeOpts
+  deriving (Eq, Show)
+
+
+data YouTubeAuthorizeOpts = YouTubeAuthorizeOpts
+  { pathTokenRefresh :: Maybe FilePath
+  , noBrowser :: Bool
+  , timeoutSeconds :: Int
+  , loginHint :: Maybe Text
+  }
+  deriving (Eq, Show)
+
 
 data FilterSubCmd =
   DialogueFC
@@ -168,6 +199,7 @@ commandDefs =
       , ("work", WorkCmd <$> workOptsP, "Works a render job.")
       , ("list", ListCmd <$> listCmdP, "Lists narrations.")
       , ("export", ExportCmd <$> exportOptsP, "Exports a production.")
+      , ("youtube", YouTubeCmd <$> youtubeOptsP, "YouTube account and authorization operations.")
       -- Deprecated:
       -- , ("launch", LaunchCmd <$> launchOptsP, "Launches a render job.")
       ]
@@ -224,8 +256,28 @@ launchOptsP =
   
 publishOptsP :: Parser PublishOpts
 publishOptsP =
-  PublishOpts <$> narrationIdOptsP
-  -- strArgument ( metavar "NARRATION-UID" <> help "UUID of the narration to publish." )
+  PublishOpts
+    <$> strArgument (  metavar "PRODUCTION-EID" <> help "EID of the completed production/render job." )
+    <*> optional (textOption ( long "title" <> metavar "TITLE" <> help "YouTube title; defaults to the narration title."))
+    <*> textOption ( long "description" <> metavar "DESCRIPTION" <> value "" <> help "YouTube video description.")
+    <*> many (textOption (  long "tag" <> metavar "TAG" <> help "YouTube tag; may be specified repeatedly."))
+    <*> textOption (  long "category" <> metavar "CATEGORY-ID" <> value "22" <> showDefault <> help "YouTube video category ID." )
+    <*> textOption (  long "privacy" <> metavar "PRIVATE|UNLISTED|PUBLIC" <> value "private" <> showDefault <> help "YouTube privacy status." )
+    <*> switch (  long "notify-subscribers" <> help "Notify channel subscribers about the new video." )
+    <*> audienceP
+    <*> syntheticMediaP
+
+
+audienceP :: Parser (Maybe Bool)
+audienceP =
+  optional $ flag' True (long "made-for-kids" <> help "Declare the video made for kids.")
+    <|> flag' False (long "not-made-for-kids" <> help "Declare the video not made for kids.")
+
+
+syntheticMediaP :: Parser (Maybe Bool)
+syntheticMediaP =
+  optional $ flag' True (  long "contains-synthetic-media" <> help "Declare realistic altered or synthetic media." )
+    <|> flag' False (  long "no-synthetic-media" <> help "Declare that the video does not contain such media." )
 
 produceOptsP :: Parser ProduceOpts
 produceOptsP =
@@ -266,3 +318,43 @@ exportOptsP =
   ExportOpts
     <$> strArgument (  metavar "PRODUCTION-ID" <> help "UUID of the render job to export." )
     <*> strArgument (  metavar "PATH" <> help "Destination path for the finalized video." )
+
+
+youtubeOptsP :: Parser YouTubeOpts
+youtubeOptsP =
+  YouTubeOpts <$> hsubparser (command "authorize"
+        (info (helper <*> (AuthorizeYouTubeCmd <$> youtubeAuthorizeOptsP))
+        (progDesc "Authorize Narravid to upload videos to YouTube."))
+      )
+
+
+youtubeAuthorizeOptsP :: Parser YouTubeAuthorizeOpts
+youtubeAuthorizeOptsP =
+  YouTubeAuthorizeOpts
+    <$> optional
+          (strOption
+            (  long "token-file"
+            <> metavar "PATH"
+            <> help
+                "Write the refresh token here; overrides youtube.refreshTokenFile."
+            )
+          )
+    <*> switch
+          (  long "no-browser"
+          <> help
+              "Do not launch the browser automatically; print the authorization URL."
+          )
+    <*> option auto
+          (  long "timeout-seconds"
+          <> metavar "SECONDS"
+          <> value 300
+          <> showDefault
+          <> help "Time to wait for the local OAuth callback."
+          )
+    <*> optional
+          (textOption
+            (  long "login-hint"
+            <> metavar "ACCOUNT"
+            <> help "Google account email to suggest during authorization."
+            )
+          )

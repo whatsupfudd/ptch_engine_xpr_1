@@ -1,11 +1,15 @@
-module Options.Runtime (defaultRun, RunOptions (..), PgDbConfig (..), defaultPgDbConf, AiConfig (..), defaultAiConf) where
+module Options.Runtime (
+    defaultRun, RunOptions (..), PgDbConfig (..), defaultPgDbConf, AiConfig (..), defaultAiConf, YouTubeConfig (..), defaultYouTubeConf
+  ) where
 -- import Data.Int (Int)
 
 import Data.Text (Text)
 import Data.UUID (UUID)
 
 import DB.Connect (PgDbConfig (..), defaultPgDbConf)
+import Publish.YouTube.Types (YouTubeConfig (..), defaultYouTubeConf)
 import Assets.Types (S3Config (..), defaultS3Conf)
+
 
 data AiConfig = AiConfig {
     server :: String
@@ -30,11 +34,13 @@ defaultAiConf =
     , imageModel = "default"
   }
 
+
 data RunOptions = RunOptions {
     debug :: Int
     , pgDbConf :: PgDbConfig
     , s3store :: S3Config
     , aiConf :: AiConfig
+    , youTubeConf :: YouTubeConfig
   }
   deriving (Show)
 
@@ -45,4 +51,5 @@ defaultRun =
     , pgDbConf = defaultPgDbConf
     , s3store = defaultS3Conf
     , aiConf = defaultAiConf
+    , youTubeConf = defaultYouTubeConf
   }

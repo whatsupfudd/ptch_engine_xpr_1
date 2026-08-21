@@ -22,9 +22,11 @@ import qualified System.Directory as Sdir
 
 
 import qualified Options.Cli as Cl (CliOptions (..), EnvOptions (..))
-import qualified Options.ConfFile as Fo (FileOptions (..), PgDbOpts (..), S3Options (..), AiOptions (..))
+import qualified Options.ConfFile as Fo
 import qualified Assets.Types as At
+import qualified Publish.YouTube.Types as Yt
 import qualified Options.Runtime as Rt
+
 
 type ConfError = Either String ()
 type RunOptSt = State Rt.RunOptions ConfError
@@ -32,6 +34,7 @@ type RunOptIOSt = StateT Rt.RunOptions IO ConfError
 type PgDbOptIOSt = StateT Rt.PgDbConfig (StateT Rt.RunOptions IO) ConfError
 type S3OptIOSt = StateT At.S3Config (StateT Rt.RunOptions IO) ConfError
 type AiOptIOSt = StateT Rt.AiConfig (StateT Rt.RunOptions IO) ConfError
+type YouTubeOptIOSt = StateT Yt.YouTubeConfig (StateT Rt.RunOptions IO) ConfError
 
 
 mconf :: MonadState s m => Maybe t -> (t -> s -> s) -> m ()
@@ -64,6 +67,7 @@ mergeOptions cli file env = do
     innerConf (\nVal s -> s { Rt.pgDbConf = nVal }) parsePgDb Rt.defaultPgDbConf file.pgDb
     innerConf (\nVal s -> s { Rt.s3store = nVal }) parseS3 At.defaultS3Conf file.s3store
     innerConf (\nVal s -> s { Rt.aiConf = nVal }) parseAi Rt.defaultAiConf file.ai
+    innerConf (\nVal s -> s { Rt.youTubeConf = nVal }) parseYouTube Rt.defaultYouTubeConf file.youTube
     pure $ Right ()
 
   parsePgDb :: Fo.PgDbOpts -> PgDbOptIOSt
@@ -94,6 +98,15 @@ mergeOptions cli file env = do
     mconf aiO.imageFunctionEid $ \nVal s -> s { Rt.imageFunctionEid = fromString nVal }
     mconf aiO.imageModel $ \nVal s -> s { Rt.imageModel = nVal }
     pure $ Right ()
+
+parseYouTube :: Fo.YouTubeOptions -> YouTubeOptIOSt
+parseYouTube youTubeO = do
+  mconf youTubeO.clientId $ \nVal s -> s { Yt.idClient = nVal }
+  mconf youTubeO.clientSecret $ \nVal s -> s { Yt.secretClient = Just nVal }
+  mconf youTubeO.refreshToken $ \nVal s -> s { Yt.tokenRefresh = Just nVal }
+  mconf youTubeO.refreshTokenFile $ \nVal s -> s { Yt.pathTokenRefresh = Just nVal }
+  pure $ Right ()
+
 
 -- | resolveEnvValue resolves an environment variable value.
 resolveEnvValue :: FilePath -> IO (Maybe FilePath)
