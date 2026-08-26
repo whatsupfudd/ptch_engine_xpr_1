@@ -931,23 +931,24 @@ concatSegmentsWithGapsAndFades cfg gapSeconds fadeSeconds segmentPaths outputPat
   withSystemTempDirectory "pitcher-final-pieces" $ \tmpDir -> do
     durations <- mapM (probeDurationSeconds cfg.ffprobeBin) segmentPaths
 
-    segmentPieces <-
-      forM (zip3 [(1 :: Int) ..] segmentPaths durations) $ \(ix, segmentPath, duration) -> do
-        let
-          outPath = tmpDir </> ("piece_" <> pad4 (ix * 2 - 1) <> "_segment.mp4")
-          fadeIn = ix > 1
-          fadeOut = ix < length segmentPaths
-          edgeFade = effectiveFadeDuration fadeSeconds duration fadeIn fadeOut
-
-        renderFinalSegmentPiece cfg edgeFade duration fadeIn fadeOut segmentPath outPath
-        pure outPath
+    segmentPieces <- forM (zip3 [(1 :: Int) ..] segmentPaths durations) $ \(ix, segmentPath, duration) ->
+      let
+        outPath = tmpDir </> ("piece_" <> pad4 (ix * 2 - 1) <> "_segment.mp4")
+        fadeIn = ix > 1
+        fadeOut = ix < length segmentPaths
+        edgeFade = effectiveFadeDuration fadeSeconds duration fadeIn fadeOut
+      in do
+      renderFinalSegmentPiece cfg edgeFade duration fadeIn fadeOut segmentPath outPath
+      pure outPath
 
     gapPieces <-
       if gapSeconds <= 0 || length segmentPaths <= 1 then
         pure []
       else
-        forM [1 .. length segmentPaths - 1] $ \ix -> do
-          let outPath = tmpDir </> ("piece_" <> pad4 (ix * 2) <> "_gap.mp4")
+        forM [1 .. length segmentPaths - 1] $ \ix ->
+          let
+            outPath = tmpDir </> ("piece_" <> pad4 (ix * 2) <> "_gap.mp4")
+          in do
           renderFinalGapPiece cfg gapSeconds outPath
           pure outPath
 
@@ -1026,10 +1027,7 @@ finalSegmentVideoFilter cfg durationSeconds fadeSeconds fadeIn fadeOut =
 finalSegmentAudioFilter :: Double -> Double -> Bool -> Bool -> String
 finalSegmentAudioFilter durationSeconds fadeSeconds fadeIn fadeOut =
   L.intercalate "," $
-    [ "aformat=sample_rates=48000:channel_layouts=stereo"
-    , "asetpts=PTS-STARTPTS"
-    ]
-      <> audioFadeFilters durationSeconds fadeSeconds fadeIn fadeOut
+    "aformat=sample_rates=48000:channel_layouts=stereo, asetpts=PTS-STARTPTS" : audioFadeFilters durationSeconds fadeSeconds fadeIn fadeOut
 
 videoFadeFilters :: Double -> Double -> Bool -> Bool -> [String]
 videoFadeFilters durationSeconds fadeSeconds fadeIn fadeOut
