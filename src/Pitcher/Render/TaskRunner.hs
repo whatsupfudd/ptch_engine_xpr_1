@@ -976,7 +976,7 @@ renderFinalSegmentPiece cfg fadeSeconds durationSeconds fadeIn fadeOut inputPath
     , "-map", "0:v:0"
     , "-map", "0:a:0"
     , "-vf", finalSegmentVideoFilter cfg durationSeconds fadeSeconds fadeIn fadeOut
-    , "-af", finalSegmentAudioFilter durationSeconds fadeSeconds fadeIn fadeOut
+    , "-af", finalSegmentAudioFilter
     , "-shortest"
     ]
       <> finalMp4EncodeArgs cfg
@@ -1024,10 +1024,13 @@ finalSegmentVideoFilter cfg durationSeconds fadeSeconds fadeIn fadeOut =
     ]
       <> videoFadeFilters durationSeconds fadeSeconds fadeIn fadeOut
 
-finalSegmentAudioFilter :: Double -> Double -> Bool -> Bool -> String
-finalSegmentAudioFilter durationSeconds fadeSeconds fadeIn fadeOut =
-  L.intercalate "," $
-    "aformat=sample_rates=48000:channel_layouts=stereo, asetpts=PTS-STARTPTS" : audioFadeFilters durationSeconds fadeSeconds fadeIn fadeOut
+
+finalSegmentAudioFilter :: String
+finalSegmentAudioFilter = "aformat=sample_rates=48000:channel_layouts=stereo, asetpts=PTS-STARTPTS"
+
+finalSegmentAudioFilterFadeOut :: Double -> Double -> Bool -> Bool -> String
+finalSegmentAudioFilterFadeOut durationSeconds fadeSeconds fadeIn fadeOut =
+  L.intercalate "," $ finalSegmentAudioFilter : audioFadeFilters durationSeconds fadeSeconds fadeIn fadeOut
 
 videoFadeFilters :: Double -> Double -> Bool -> Bool -> [String]
 videoFadeFilters durationSeconds fadeSeconds fadeIn fadeOut

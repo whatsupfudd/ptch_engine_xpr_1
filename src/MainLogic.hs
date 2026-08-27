@@ -37,6 +37,7 @@ runWithOptions cliOptions fileOptions = do
             Opt.ListCmd listOpts -> Cmd.listCmd listOpts
             Opt.ExportCmd exportOpts -> Cmd.exportCmd exportOpts
             Opt.YouTubeCmd youtubeOpts -> Cmd.youtubeCmd youtubeOpts
+            Opt.RefinalizeCmd refinalizeOpts -> Cmd.refinalizeCmd refinalizeOpts
       eiRtOptions <- Opt.mergeOptions cliOptions fileOptions envOptions
       case eiRtOptions of
         Left errMsg -> error $ "@[runWithOptions] mergeOptions err: " <> errMsg

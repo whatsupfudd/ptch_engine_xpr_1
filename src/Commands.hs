@@ -8,6 +8,7 @@ module Commands  (
   , module Commands.List
   , module Commands.Export
   , module Commands.YouTube
+  , module Commands.Refinalize
  )
 where
 
@@ -20,3 +21,4 @@ import Commands.Work
 import Commands.List
 import Commands.Export
 import Commands.YouTube
+import Commands.Refinalize

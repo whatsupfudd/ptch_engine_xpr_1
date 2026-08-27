@@ -37,6 +37,7 @@ library
       Commands.List
       Commands.Produce
       Commands.Publish
+      Commands.Refinalize
       Commands.Version
       Commands.Work
       Commands.YouTube
@@ -48,6 +49,7 @@ library
       DB.ProducerOps
       DB.ProducerStmt
       DB.PublishStmt
+      DB.RefinalizeStmt
       DB.TaskStmt
       HttpSup.CorsPolicy
       MainLogic

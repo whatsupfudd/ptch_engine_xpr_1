@@ -19,6 +19,7 @@ module Pitcher.Render.Producer
   , TrailingDialoguePolicy(..)
 
   , launchProducer
+  , defaultProducerCfg
   , producerTick
   , buildRenderGraph
 
@@ -26,6 +27,8 @@ module Pitcher.Render.Producer
   , mkImageNode
   , mkSegmentNode
   , mkFinalNode
+  , deriveKeyFinal
+  , paramsFinal
   ) where
 
 import Control.Exception (throwIO)
@@ -73,6 +76,19 @@ data ProducerCfg = ProducerCfg
   , trailingDialoguePolicy :: TrailingDialoguePolicy
   }
   deriving (Eq, Show)
+
+defaultProducerCfg :: ProducerCfg
+defaultProducerCfg = ProducerCfg {
+    renderVersionTag = "v1"
+  , defaultMaxAttempts = 1
+  , finalGapSeconds = 1.0
+  , finalFadeSeconds = 1.0
+  , ttsVoice = Just "en-US-Standard-A"
+  , imageStyleTag = "v1"
+  , segmentPolicyTag = "v1"
+  , finalPolicyTag = "v1"
+  , trailingDialoguePolicy = AttachTrailingToPreviousSection
+  }
 
 data ProducerTick = ProducerTick
   { promotedReady :: Int64
@@ -339,31 +355,35 @@ mkSectionSegmentNode cfg section =
     zipWith (\ix input -> (input :: RenderInputSpec) { ord = ix }) [1..]
 
 
+deriveKeyFinal :: ProducerCfg -> UUID -> [Text] -> Text
+deriveKeyFinal cfg narrationEid segmentKeys =
+  deriveKeyText $
+    [ "final"
+    , Uu.toText narrationEid
+    , cfg.finalPolicyTag
+    , cfg.renderVersionTag
+    , tshow cfg.finalGapSeconds
+    , tshow cfg.finalFadeSeconds
+    ]
+    <> segmentKeys
+
+
+paramsFinal :: ProducerCfg -> Ae.Value
+paramsFinal cfg =
+  Ae.object
+    [ "finalPolicyTag" .= cfg.finalPolicyTag
+    , "gapSeconds" .= cfg.finalGapSeconds
+    , "fadeSeconds" .= cfg.finalFadeSeconds
+    , "renderVersionTag" .= cfg.renderVersionTag
+    ]
+
+
 mkFinalNodeFromSections :: ProducerCfg -> NarrationRender -> [RenderSection] -> RenderNodeSpec
 mkFinalNodeFromSections cfg narration sections =
   let
-    segmentNodes =
-      [ mkSectionSegmentNode cfg section
-      | section <- sections
-      ]
-
-    dkey =
-      deriveKeyText $
-        [ "final"
-        , Uu.toText narration.eid
-        , cfg.finalPolicyTag
-        , cfg.renderVersionTag
-        , tshow cfg.finalGapSeconds
-        , tshow cfg.finalFadeSeconds
-        ]
-        <> map (.deriveKey) segmentNodes
-
-    nodeInputs =
-      zipWith
-        (\ix n -> nodeInput ix n.deriveKey (Just "segment"))
-        [1..]
-        segmentNodes
-
+    segmentNodes = [ mkSectionSegmentNode cfg section | section <- sections ]
+    dkey = deriveKeyFinal cfg narration.eid $ map (.deriveKey) segmentNodes
+    nodeInputs = zipWith (\ix n -> nodeInput ix n.deriveKey (Just "segment")) [1..] segmentNodes
   in
   RenderNodeSpec
     { deriveKey = dkey
@@ -372,13 +392,7 @@ mkFinalNodeFromSections cfg narration sections =
     , ord = 1000000000
     , sourceKind = Just NarrationSource
     , sourceEid = Just narration.eid
-    , params =
-        Ae.object
-          [ "finalPolicyTag" .= cfg.finalPolicyTag
-          , "gapSeconds" .= cfg.finalGapSeconds
-          , "fadeSeconds" .= cfg.finalFadeSeconds
-          , "renderVersionTag" .= cfg.renderVersionTag
-          ]
+    , params = paramsFinal cfg
     , artifactKind = "final"
     , inputs = nodeInputs
     , maxAttempts = cfg.defaultMaxAttempts
@@ -504,50 +518,20 @@ mkSegmentNode cfg dlg =
 mkFinalNode :: ProducerCfg -> NarrationRender -> RenderNodeSpec
 mkFinalNode cfg narration =
   let
-    segmentNodes =
-      [ mkSegmentNode cfg dlg
-      | dlg <- narration.dialogues
-      ]
-
-    dkey =
-      deriveKeyText $
-        [ "final"
-        , Uu.toText narration.eid
-        , cfg.finalPolicyTag
-        , cfg.renderVersionTag
-        , tshow cfg.finalGapSeconds
-        , tshow cfg.finalFadeSeconds
-        ]
-        <> map (.deriveKey) segmentNodes
-
-    nodeInputs =
-      zipWith
-        (\ix n -> nodeInput ix n.deriveKey (Just "segment"))
-        [1..]
-        segmentNodes
-
+    segmentNodes = [ mkSegmentNode cfg dlg | dlg <- narration.dialogues ]
+    dkey = deriveKeyFinal cfg narration.eid $ map (.deriveKey) segmentNodes
+    nodeInputs = zipWith (\ix n -> nodeInput ix n.deriveKey (Just "segment")) [1..] segmentNodes
   in
   RenderNodeSpec
     { deriveKey = dkey
     , lane = FinalizeLane
     , exec = FfmpegConcatExec
     , ord = 1000000000
-
     , sourceKind = Just NarrationSource
     , sourceEid = Just narration.eid
-
-    , params =
-        Ae.object
-          [ "finalPolicyTag" .= cfg.finalPolicyTag
-          , "gapSeconds" .= cfg.finalGapSeconds
-          , "fadeSeconds" .= cfg.finalFadeSeconds
-          , "renderVersionTag" .= cfg.renderVersionTag
-          ]
-
+    , params = paramsFinal cfg
     , artifactKind = "final"
-
     , inputs = nodeInputs
-
     , maxAttempts = cfg.defaultMaxAttempts
     }
 

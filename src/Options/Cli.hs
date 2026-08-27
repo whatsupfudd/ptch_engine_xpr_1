@@ -57,6 +57,7 @@ data Command =
   | ListCmd ListOpts
   | ExportCmd ExportOpts
   | YouTubeCmd YouTubeOpts
+  | RefinalizeCmd NarrationIdOpt
   -- Deprecated:
   -- | LaunchCmd LaunchOpts
   deriving stock (Show)
@@ -200,6 +201,7 @@ commandDefs =
       , ("list", ListCmd <$> listCmdP, "Lists narrations.")
       , ("export", ExportCmd <$> exportOptsP, "Exports a production.")
       , ("youtube", YouTubeCmd <$> youtubeOptsP, "YouTube account and authorization operations.")
+      , ("refinalize", RefinalizeCmd <$> narrationIdOptsP, "Refinalizes a narration.")
       -- Deprecated:
       -- , ("launch", LaunchCmd <$> launchOptsP, "Launches a render job.")
       ]
